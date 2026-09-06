@@ -1,0 +1,28 @@
+# OS / editor local files
+.DS_Store
+.idea
+.claude/settings.local.json
+
+# Python generated files
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments and local env files
+.venv/
+venv/
+env/
+.env
+.env.*
+
+# 项目设计文档（roadmap / 各里程碑计划）：含对内部项目 vortex 的参考分析，
+# vortex 为 CVM 内部代码不可对外公开，故 docs/ 永不提交（本地保留）
+docs/
+
+# spec-workflow 编排层自身产物（运行时状态不入库）
+.codebuddy/
+.specworkflow/
+spec/
