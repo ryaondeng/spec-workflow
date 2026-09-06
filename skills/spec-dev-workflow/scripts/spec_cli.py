@@ -25,6 +25,7 @@ spec-workflow 编排引擎 CLI（M0）
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -418,8 +419,29 @@ def run_builtin_check(spec_root: Path, fd: Path, stage: dict, check: dict) -> di
             "items": results}
 
 
+def _platform_cmd(cmd, is_win=None):
+    """command 门禁命令的跨平台归一（仅影响声明式 command 门禁，不影响其它）：
+    - POSIX（默认/非 Windows）：原样交给 /bin/sh。
+    - Windows（cmd.exe）：只做保守替换——前导 `python3 `/`python ` 换成当前解释器
+      （Windows 常无 python3 启动名）；其余命令原样交给 cmd.exe。
+      POSIX 专用工具（bash/test/…）cmd.exe 无法执行时自然失败，detail 会给出输出提示。
+    """
+    if is_win is None:
+        is_win = (os.name == "nt")
+    if not is_win:
+        return cmd
+    t = cmd.strip()
+    if t in ("python3", "python"):
+        return '"%s"' % sys.executable
+    for prefix in ("python3 ", "python "):
+        if t.startswith(prefix):
+            rest = t[len(prefix):]
+            return '"%s" %s' % (sys.executable, rest)
+    return cmd
+
+
 def run_command_check(spec_root: Path, fd: Path, stage: dict, check: dict) -> dict:
-    cmd = check["cmd"]
+    cmd = _platform_cmd(check["cmd"])
     try:
         proc = subprocess.run(cmd, shell=True, cwd=str(spec_root), timeout=CMD_TIMEOUT,
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT)

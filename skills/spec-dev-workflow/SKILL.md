@@ -1,6 +1,6 @@
 ---
 name: spec-dev-workflow
-version: 0.4.0
+version: 0.4.1
 description: >
   spec-workflow 编排层的核心流水线 skill（spec 驱动开发，8 阶段）。
   由编排引擎（spec_cli.py）驱动：开始新功能/新阶段时初始化 spec，
@@ -34,6 +34,9 @@ description: >
 
 CLI 与模板位于**本 skill 目录**（SKILL.md 所在目录）的 `scripts/`、`templates/` 下。
 无论全局还是项目级安装，统一用本目录定位：
+
+> 跨平台：引擎为纯 Python（3.7+），Windows/Linux/macOS 原生可跑。Windows 若没有 `python3`
+> 启动名，用 `python` 或 `py -3` 替代下方示例的 `python3`（如 `python $CLI init …`）。
 
 ```bash
 CLI="<skill目录>/scripts/spec_cli.py"

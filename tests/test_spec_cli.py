@@ -417,5 +417,38 @@ class ExtendCase(unittest.TestCase):
         self.assertEqual(rc, 0, out)
 
 
+class TestPlatformCmd(unittest.TestCase):
+    """command 门禁命令的跨平台归一（Windows 兼容）。"""
+
+    @staticmethod
+    def _mod():
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("spec_cli_ut", str(CLI))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_posix_passthrough(self):
+        mod = self._mod()
+        cmd = "python3 check.py --dir ."
+        self.assertEqual(mod._platform_cmd(cmd, is_win=False), cmd)
+
+    def test_win_python3_mapped_to_current_interpreter(self):
+        mod = self._mod()
+        out = mod._platform_cmd("python3 check.py --dir .", is_win=True)
+        self.assertTrue(out.startswith('"%s"' % sys.executable), out)
+        self.assertTrue(out.endswith(" check.py --dir ."), out)
+
+    def test_win_non_python_kept(self):
+        mod = self._mod()
+        cmd = "bash health-check.sh ./spec user-auth"
+        self.assertEqual(mod._platform_cmd(cmd, is_win=True), cmd)
+
+    def test_win_plain_python3(self):
+        mod = self._mod()
+        out = mod._platform_cmd("python3", is_win=True)
+        self.assertEqual(out, '"%s"' % sys.executable)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

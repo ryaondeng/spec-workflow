@@ -43,7 +43,9 @@ def read(path):
 
 def write(path, text):
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
+    # newline="\n"：跨平台固定 LF，避免 Windows 文本模式把 \n 写成 \r\n，
+    # 保证生成的 md/json 在任何平台字节一致（确定性 / git diff / CI 漂移检测依赖）
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
         f.write(text)
 
 
@@ -59,7 +61,8 @@ def json_load(path):
 
 def json_save(path, obj):
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
+    # 同 write：固定 LF，跨平台字节一致
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
         f.write(inv.stable_dumps(obj))
 
 

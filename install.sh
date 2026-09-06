@@ -4,7 +4,9 @@
 #   bash install.sh --project <project-path>   # 项目级安装
 #   bash install.sh --global                    # 全局安装（~/.codebuddy/skills/）
 #   bash install.sh --project <path> --force    # 覆盖安装（删除旧目录后重装）
-# 安装单元 = skills/ 下全部 skill（spec-dev-workflow 编排流程 + spec-health-check 质量评审等）
+# 安装单元 = skills/ 下全部 skill（spec-dev-workflow 编排流程 + spec-health-check 质量评审 + dev-docs 文档逆向）
+# Windows 兼容: Windows 无原生 bash——项目级/全局安装请用同目录 install.py（python install.py [--project <path>|--global] [--force]），
+# 或经 Git Bash / WSL 运行本脚本。三个 bash 脚本（install.sh/uninstall.sh/skills/*/scripts/*.sh）同理需 Git Bash/WSL。
 
 set -euo pipefail
 
@@ -61,6 +63,8 @@ for src in "$SKILLS_SRC"/*/; do
     fi
     mkdir -p "$(dirname "$dest")"
     cp -r "$src" "$dest"
+    # 清理源目录可能带入的 Python 缓存，保持安装目录干净
+    find "$dest" -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
     echo "[ADD] $name 已安装: $dest"
     count=$((count + 1))
 done

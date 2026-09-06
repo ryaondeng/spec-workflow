@@ -1,6 +1,6 @@
 ---
 name: dev-docs
-version: 1.2.0
+version: 1.2.1
 description: >
   从已有代码库反建技术文档（dev-docs）：面向没有接口/设计/架构文档的存量项目，
   用机器盘点 + AI 语义 + 覆盖对账三层机制提取出「架构 / 各模块详档（概览四问 + 符号索引表 + 分级契约）/ 数据层（可选）」文档集，
@@ -22,6 +22,15 @@ description: >
 6. **权威来源去重** — 目标项目已有的 docs/rules/README 等同类内容：摘录 + 链接，不复制、不覆盖、不双轨
 7. **分层顺序硬约束** — 架构（定位）→ 模块/接口 → 数据，逐层确认，禁止跳过定位层直接写接口
 8. **只检查/生成文档，不改代码**；文档与代码同一次提交入库
+
+## 系统要求（跨平台）
+
+- Python 3.7+，零第三方依赖。Windows / Linux / macOS 原生可跑（`scripts/` 全为 Python）。
+- Windows 若没有 `python3` 启动名，用 `python` 或 `py -3` 替代下文命令中的 `python3`。
+- 生成产物统一 LF 换行（脚本跨平台固定 `newline="\n"`）：任何平台生成结果字节一致，
+  确定性（byte-identical）与 git diff / CI 漂移检测不受换行符影响。
+- 全仓库安装：`install.py`（跨平台，`python install.py --project <path>` 或 `--global`）；
+  Git Bash / WSL 下亦可 `bash install.sh`。bash 脚本（install.sh/uninstall.sh 等）需要 Git Bash/WSL。
 
 ## 产物契约
 

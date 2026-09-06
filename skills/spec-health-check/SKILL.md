@@ -1,6 +1,6 @@
 ---
 name: spec-health-check
-version: 0.3.0
+version: 0.3.1
 description: >
   Spec 健康度检查。对已存在的 spec 目录（spec-dev-workflow 8 阶段结构：00-index → 08-commit）
   执行双层检查：脚本层验证结构与交叉一致性，模型层评审文档质量与留痕真实性，
@@ -42,6 +42,14 @@ description: >
 
 ### 第一步：运行脚本层检查
 
+跨平台（Python 3.7+，Windows/Linux/macOS 原生可跑）：
+
+```bash
+python <skill目录>/scripts/health-check.py <spec根目录> <名称> [--version <版本>]
+```
+
+Git Bash / WSL 环境亦可用等价的 bash 版（同一套输出与退出码）：
+
 ```bash
 bash <skill目录>/scripts/health-check.sh <spec根目录> <名称> [--version <版本>]
 ```
@@ -49,8 +57,8 @@ bash <skill目录>/scripts/health-check.sh <spec根目录> <名称> [--version <
 示例：
 
 ```bash
-bash <skill目录>/scripts/health-check.sh /home/deng/work/tonghuashun/spec v1.0
-bash <skill目录>/scripts/health-check.sh ./spec v0.0 --version V1
+python <skill目录>/scripts/health-check.py /home/deng/work/tonghuashun/spec v1.0
+python <skill目录>/scripts/health-check.py ./spec v0.0 --version V1
 ```
 
 从输出中获取：
