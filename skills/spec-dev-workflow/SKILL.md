@@ -1,6 +1,6 @@
 ---
 name: spec-dev-workflow
-version: 0.3.1
+version: 0.4.0
 description: >
   spec-workflow 编排层的核心流水线 skill（spec 驱动开发，8 阶段）。
   由编排引擎（spec_cli.py）驱动：开始新功能/新阶段时初始化 spec，
@@ -42,6 +42,8 @@ python3 $CLI status <spec根目录> <目录名>              # 进度看板（�
 python3 $CLI restore <spec根目录> <feature> [--json]           # 断点续传（恢复会话第一步）
 python3 $CLI phase-complete <spec根目录> <feature> <阶段> \
   --handoff '{"summary":"...","key_decisions":[...],"artifacts":{...},"next_inputs":{...}}'
+python3 $CLI phase-complete <spec根目录> <feature> review \
+  --handoff '...' --review-result '{"score":87,"gate":"green","dimensions":[{"id":"A需求质量","score":92},...],"issues":[{"severity":"MINOR","dimension":"B","desc":"...","fix":"..."}]}'  # review 质量门控阶段必填，score<min_score(默认80)拒绝
 python3 $CLI phase-complete <spec根目录> <feature> <阶段> --skip "<原因>"   # 显式跳过
 python3 $CLI gate <spec根目录> <feature> [--phase 阶段]        # 门禁预检
 python3 $CLI handoff read <spec根目录> <feature> <阶段>         # 读上游交接
@@ -69,7 +71,13 @@ python3 $CLI handoff list <spec根目录> <feature>
    **完成后删除产物文件末尾的模板标记行**（含 `SPEC_TEMPLATE_PENDING` 的行）——门禁据此判定已填写。
 3. **确认点阶段**（pipeline 中 `confirm_point: true`，默认 requirements/design）：
    先把产物要点 + 验收标准/设计要点呈现给用户，**获用户认可后才能收口**，不得自主推进。
-4. **收口**：`phase-complete ... --handoff '<json>'`。门禁全过则状态推进并刷新视图，进入下一阶段循环。
+4. **review 质量门控**（pipeline 中挂 `{"type":"review"}` 的阶段，默认 review）：
+   收口前按 `spec-health-check` skill 的四维评审（A 需求质量/B 跨文档一致性/C 留痕真实性/D 设计计划）
+   对 feature 产物链评审打分，产出 review-result（score 0-100 + dimensions + issues）：
+   - `phase-complete ... --review-result '<json>'`；引擎校验 score ≥ min_score（默认 80）才放行
+   - **低于红线被拒**：按输出的 issues 修复产物 → 重新评审 → 再收口；禁止降阈值或绕过
+   - review-result 管 spec 文档质量；代码审查由 06-code-review-report.md + code-reviewer 子代理负责（互补）
+5. **收口**：`phase-complete ... --handoff '<json>'`。门禁全过则状态推进并刷新视图，进入下一阶段循环。
 
 ### handoff 四字段（下游唯一输入，≤4KB）
 
@@ -157,6 +165,10 @@ python3 $CLI handoff list <spec根目录> <feature>
 
 ## 门禁说明
 
-- **内置规则**：`artifacts_exist` / `artifacts_nonempty`（≥100B）/ `no_placeholder`（系统占位符）/ `no_fill_marker`（模板标记须清除）/ `tasks_any_checked` / `tasks_all_checked`
-- **可扩展**：项目可在 `<spec根目录>/pipeline.json` 覆盖流水线定义，给阶段加 `{"type":"command","cmd":"..."}` 外部检查（exit 0 通过）——不改引擎代码即可接入任意 CLI
-- **门禁失败**：`phase-complete` 整体失败且状态零变化；修复产物后重试
+- **三类检查**：
+  - `builtin` 内置规则：`artifacts_exist` / `artifacts_nonempty`（≥100B）/ `no_placeholder` / `no_fill_marker` / `tasks_any_checked` / `tasks_all_checked`
+  - `command` 外部命令：`{"type":"command","cmd":"..."}`（exit 0 通过）——接入任意 CLI 不改引擎
+  - `review` 质量门控：`{"type":"review","min_score":80}`——收口时需 `--review-result`（spec-health-check 四维评审），score ≥ min_score 才放行
+- **门禁失败**：`phase-complete` 整体失败且状态零变化；修复产物后重试（review 被拒则重评）
+
+> 编排层第二个被集成的 skill：`spec-health-check`（位于本编排层 `skills/` 下的同级 skill 目录；也可作为独立体检工具对任意 spec 目录使用）。

@@ -70,7 +70,8 @@
       "confirm_point": false,
       "gate": {
         "checks": [
-          {"type": "builtin", "rules": ["artifacts_exist", "artifacts_nonempty", "no_placeholder", "no_fill_marker"]}
+          {"type": "builtin", "rules": ["artifacts_exist", "artifacts_nonempty", "no_placeholder", "no_fill_marker"]},
+          {"type": "review", "min_score": 80, "desc": "spec 质量评审（spec-health-check 四维评审：A需求/B一致性/C真实性/D设计计划）"}
         ]
       },
       "tools": []

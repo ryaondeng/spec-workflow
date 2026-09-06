@@ -143,6 +143,10 @@ def validate_pipeline(p: dict) -> list:
                 errors.append("[%s] gate.check.type 非法: %s" % (sid, ctype))
             if ctype == "command" and not check.get("cmd"):
                 errors.append("[%s] command 检查缺少 cmd" % sid)
+            if ctype == "review":
+                ms = check.get("min_score", 80)
+                if not isinstance(ms, (int, float)) or not (0 <= ms <= 100):
+                    errors.append("[%s] review 的 min_score 须为 0-100 数值" % sid)
             if ctype == "builtin":
                 for rule in check.get("rules", []):
                     if rule not in BUILTIN_RULES:
@@ -430,14 +434,55 @@ def run_command_check(spec_root: Path, fd: Path, stage: dict, check: dict) -> di
         return {"type": "command", "cmd": cmd, "passed": False, "detail": "执行异常: %s" % e}
 
 
-def run_review_check(spec_root: Path, fd: Path, stage: dict, check: dict) -> dict:
-    # M0 占位：类型与结果结构已定义，M1 由 spec-health-check skill 填充实现
-    return {"type": "review", "passed": True,
-            "detail": "review 门控占位（M1 接入 spec-health-check）", "placeholder": True}
+def validate_review_result(payload: dict) -> list:
+    """校验 --review-result（spec-health-check 评审产物）；空列表 = 合法"""
+    errors = []
+    if not isinstance(payload, dict):
+        return ["review-result 必须是 JSON 对象"]
+    sc = payload.get("score")
+    if isinstance(sc, bool) or not isinstance(sc, (int, float)) or not (0 <= sc <= 100):
+        errors.append("score 须为 0-100 数值")
+    dims = payload.get("dimensions")
+    if not isinstance(dims, list) or not dims:
+        errors.append("dimensions 须为非空数组（建议四项：A需求/B一致性/C真实性/D设计计划）")
+    elif any(not isinstance(d, dict) or not d.get("id")
+             or not isinstance(d.get("score"), (int, float)) for d in dims):
+        errors.append("dimensions 每项须含 id 与数值 score")
+    if payload.get("issues") is not None and not isinstance(payload["issues"], list):
+        errors.append("issues 须为数组")
+    if payload.get("gate") not in (None, "green", "yellow", "red"):
+        errors.append("gate 取值须为 green/yellow/red")
+    return errors
 
 
-def run_gate(spec_root: str, fd: Path, state: dict, pipeline: dict, phase: str) -> dict:
-    """执行指定阶段 gate.checks 的全部检查，返回结果 dict（不落盘）"""
+def run_review_check(check: dict, review_result: dict, precheck: bool, phase: str) -> dict:
+    """review 门控：AI 按 spec-health-check 评审产出 --review-result，引擎机器把关分数阈值"""
+    min_score = check.get("min_score", 80)
+    if precheck:
+        return {"type": "review", "min_score": min_score, "passed": True, "skipped": True,
+                "detail": "review 门控：收口时校验（gate 预检跳过，达标线 %d）" % min_score}
+    if review_result is None:
+        return {"type": "review", "min_score": min_score, "passed": False,
+                "detail": "缺少 --review-result（须按 spec-health-check 四维评审提供 score/issues）"}
+    errors = validate_review_result(review_result)
+    if errors:
+        return {"type": "review", "min_score": min_score, "passed": False,
+                "detail": "review-result 不合法: " + "; ".join(errors)}
+    score = review_result["score"]
+    issues = review_result.get("issues", [])
+    passed = score >= min_score
+    detail = "score=%d %s 达标线 %d" % (score, "≥" if passed else "<", min_score)
+    if not passed and issues:
+        top = "; ".join("[%s] %s" % (i.get("severity", "?"), i.get("desc", "")) for i in issues[:3])
+        detail += " | issues: " + top
+    return {"type": "review", "min_score": min_score, "score": score, "passed": passed,
+            "detail": detail, "issues": issues, "gate": review_result.get("gate")}
+
+
+def run_gate(spec_root: str, fd: Path, state: dict, pipeline: dict, phase: str,
+             review_result: dict = None, precheck: bool = False) -> dict:
+    """执行指定阶段 gate.checks 的全部检查，返回结果 dict（不落盘）
+    review 门控：precheck(预检)=跳过展示；收口时传入 review_result 严格判定"""
     stage = stage_by_id(pipeline, phase)
     if stage is None:
         err("阶段不存在于流水线: %s" % phase)
@@ -451,7 +496,7 @@ def run_gate(spec_root: str, fd: Path, state: dict, pipeline: dict, phase: str) 
         elif ctype == "command":
             r = run_command_check(root, fd, stage, check)
         elif ctype == "review":
-            r = run_review_check(root, fd, stage, check)
+            r = run_review_check(check, review_result, precheck, phase)
         else:
             continue
         result["checks"].append(r)
@@ -574,7 +619,7 @@ def cmd_gate(args) -> None:
     phase = args.phase or state.get("current_phase") or phase_ids(pipeline)[-1]
     if phase is None:
         err("当前无进行中阶段")
-    result = run_gate(args.spec_root, docs, state, pipeline, phase)
+    result = run_gate(args.spec_root, docs, state, pipeline, phase, precheck=True)
     print_gate(result)
     sys.exit(0 if result["passed"] else 1)
 
@@ -608,7 +653,15 @@ def cmd_phase_complete(args) -> None:
         return
 
     # ---- 1. 门禁 ----
-    gate_result = run_gate(args.spec_root, docs, state, pipeline, phase)
+    # 解析 review-result（挂 review 门控的阶段收口需提供；解析失败直接拒绝）
+    review_result = None
+    if args.review_result is not None:
+        try:
+            review_result = json.loads(args.review_result)
+        except json.JSONDecodeError as e:
+            err("--review-result 不是合法 JSON: %s" % e)
+    gate_result = run_gate(args.spec_root, docs, state, pipeline, phase,
+                           review_result=review_result, precheck=False)
     print_gate(gate_result)
     if not gate_result["passed"]:
         err("门禁未通过，状态未变更。修复后重试 phase-complete")
@@ -745,6 +798,7 @@ def main() -> None:
     p.add_argument("--handoff", default=None, help="handoff JSON（四字段）")
     p.add_argument("--skip", default=None, metavar="原因", help="跳过当前阶段并注明原因")
     p.add_argument("--decision", default=None, help="可选：追加一条决策记录")
+    p.add_argument("--review-result", default=None, help="review 门控阶段必填：spec-health-check 评审 JSON（score/issues）")
     p.set_defaults(func=cmd_phase_complete)
 
     p = sub.add_parser("gate", help="门禁检查（可独立预检）")

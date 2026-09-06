@@ -235,7 +235,9 @@ class EngineCase(unittest.TestCase):
                       "--skip", "无集成环境")
         self.assertEqual(rc, 0, out)
         self.fill("06-code-review-report.md", FILL_06)
-        rc, out = self.complete("review")
+        rc, out = run("phase-complete", self.root, self.f, "review",
+                      "--handoff", ho(summary="CR 完成"),
+                      "--review-result", review_result(90))
         self.assertEqual(rc, 0, out)
         self.fill("07-docs-update-plan.md", FILL_07)
         rc, out = self.complete("docs")
@@ -248,6 +250,128 @@ class EngineCase(unittest.TestCase):
         self.assertEqual(st["phases"]["commit"]["status"], "completed")
         rc, out = run("status", self.root, self.f)
         self.assertIn("全部阶段已完成", out)
+
+
+def review_result(score, **kw):
+    base = {
+        "score": score,
+        "gate": "green" if score >= 85 else ("yellow" if score >= 70 else "red"),
+        "dimensions": [{"id": "A需求质量", "score": score - 2},
+                       {"id": "B一致性", "score": score - 5},
+                       {"id": "C真实性", "score": score - 1},
+                       {"id": "D设计计划", "score": score - 3}],
+        "issues": [{"severity": "MINOR", "dimension": "B", "desc": "示例问题"}],
+        "method": "spec-health-check v0.3 四维评审",
+    }
+    base.update(kw)
+    return json.dumps(base, ensure_ascii=False)
+
+
+class ReviewGateCase(unittest.TestCase):
+    """M1：review 质量门控（spec-health-check 接入）"""
+
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.root = str(Path(self._td.name) / "spec")
+        rc, out = run("init", self.root, "qa", "--name", "质量演示")
+        self.assertEqual(rc, 0, out)
+        self.fd = [p for p in Path(self.root).iterdir() if p.is_dir()][0]
+        self.f = self.fd.name
+        self.sess = Path(self.root).resolve().parent / ".specworkflow" / "sessions" / self.f
+
+    def tearDown(self):
+        self._td.cleanup()
+
+    def _fill(self, name, text):
+        (self.fd / name).write_text(text, encoding="utf-8")
+
+    def _advance_to_review(self):
+        """走完 requirements/design/implementation/unit-test，skip 集成测试 → 停在 review"""
+        self._fill("01-requirements.md", FILL_REQ)
+        rc, out = run("phase-complete", self.root, self.f, "requirements", "--handoff", ho())
+        self.assertEqual(rc, 0, out)
+        self._fill("02-design.md", FILL_02)
+        self._fill("03-implementation-plan.md", FILL_03)
+        rc, out = run("phase-complete", self.root, self.f, "design", "--handoff", ho())
+        self.assertEqual(rc, 0, out)
+        self._fill("08-commit.md", FILL_08_HALF)
+        rc, out = run("phase-complete", self.root, self.f, "implementation", "--handoff", ho())
+        self.assertEqual(rc, 0, out)
+        self._fill("04-unit-test-plan.md", FILL_04)
+        rc, out = run("phase-complete", self.root, self.f, "unit-test", "--handoff", ho())
+        self.assertEqual(rc, 0, out)
+        rc, out = run("phase-complete", self.root, self.f, "integration-test",
+                      "--skip", "无集成环境")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.read_state()["current_phase"], "review")
+
+    def read_state(self):
+        return json.loads((self.sess / "state.json").read_text())
+
+    def _complete_review(self, rv=None):
+        args = ["phase-complete", self.root, self.f, "review", "--handoff",
+                ho(summary="CR 完成")]
+        if rv is not None:
+            args += ["--review-result", rv]
+        return run(*args)
+
+    def test_review_missing_result(self):
+        """AC-03: review 阶段缺 --review-result 被拒"""
+        self._advance_to_review()
+        self._fill("06-code-review-report.md", FILL_06)
+        rc, out = self._complete_review()
+        self.assertEqual(rc, 1)
+        self.assertIn("缺少 --review-result", out)
+        self.assertEqual(self.read_state()["phases"]["review"]["status"], "pending")
+
+    def test_review_bad_schema(self):
+        """AC-04: review-result schema 非法被拒"""
+        self._advance_to_review()
+        self._fill("06-code-review-report.md", FILL_06)
+        rc, out = self._complete_review(rv='{"score":"high"}')
+        self.assertEqual(rc, 1)
+        self.assertIn("score 须为 0-100", out)
+        rc, out = self._complete_review(rv='not-json')
+        self.assertEqual(rc, 1)
+        self.assertIn("不是合法 JSON", out)
+
+    def test_review_low_score_rejected(self):
+        """AC-05: score < min_score(80) 拒绝收口、状态零变化、输出 issues"""
+        self._advance_to_review()
+        self._fill("06-code-review-report.md", FILL_06)
+        rc, out = self._complete_review(rv=review_result(60))
+        self.assertEqual(rc, 1)
+        self.assertIn("score=60 < 达标线 80", out)
+        self.assertIn("示例问题", out)
+        st = self.read_state()
+        self.assertEqual(st["phases"]["review"]["status"], "pending")
+        self.assertEqual(st["current_phase"], "review")
+
+    def test_review_pass_records_score(self):
+        """AC-06: score ≥ min_score 放行，gate_result 记录证据"""
+        self._advance_to_review()
+        self._fill("06-code-review-report.md", FILL_06)
+        rc, out = self._complete_review(rv=review_result(88))
+        self.assertEqual(rc, 0, out)
+        gr = self.read_state()["phases"]["review"]["gate_result"]
+        review_check = [c for c in gr["checks"] if c["type"] == "review"][0]
+        self.assertEqual(review_check["score"], 88)
+        self.assertTrue(review_check["passed"])
+
+    def test_review_precheck_skips(self):
+        """gate 预检对 review 不判失败（显示收口时校验）；builtin 仍需通过"""
+        self._advance_to_review()
+        self._fill("06-code-review-report.md", FILL_06)
+        rc, out = run("gate", self.root, self.f, "--phase", "review")
+        self.assertEqual(rc, 0)
+        self.assertIn("收口时校验", out)
+
+    def test_nonreview_stage_ignores_review_result(self):
+        """AC-07: 无 review 门控的阶段不要求 --review-result"""
+        self._fill("01-requirements.md", FILL_REQ)
+        rc, out = run("phase-complete", self.root, self.f, "requirements",
+                      "--handoff", ho())
+        self.assertEqual(rc, 0, out)
 
 
 class ExtendCase(unittest.TestCase):

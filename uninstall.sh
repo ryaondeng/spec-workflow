@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # spec-workflow 卸载脚本
 # 用法: bash uninstall.sh --project <path> | --global
-# 只移除安装的 skill 目录，项目内 spec/<feature>/ 数据不受影响
+# 只移除安装的 skills，项目内 spec/ 数据与 .specworkflow/ 会话不受影响
 
 set -euo pipefail
 
@@ -20,15 +20,19 @@ if [ -z "$MODE" ]; then
 fi
 
 if [ "$MODE" = "global" ]; then
-    DEST="${HOME}/.codebuddy/skills/spec-dev-workflow"
+    BASE="${HOME}/.codebuddy/skills"
 else
-    DEST="${TARGET%/}/.codebuddy/skills/spec-dev-workflow"
+    [ -n "$TARGET" ] || { echo "❌ --project 需要指定项目路径" >&2; exit 1; }
+    BASE="${TARGET%/}/.codebuddy/skills"
 fi
 
-if [ -e "$DEST" ]; then
-    rm -rf "$DEST"
-    echo "[REMOVED] $DEST"
-    echo "项目内 spec/ 数据已保留"
-else
-    echo "[SKIP] 未安装: $DEST"
-fi
+for name in spec-dev-workflow spec-health-check; do
+    dest="$BASE/$name"
+    if [ -e "$dest" ]; then
+        rm -rf "$dest"
+        echo "[REMOVED] $dest"
+    else
+        echo "[SKIP] 未安装: $dest"
+    fi
+done
+echo "项目内 spec/ 文档与 .specworkflow/ 会话已保留"
