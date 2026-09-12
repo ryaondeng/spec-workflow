@@ -1,0 +1,40 @@
+[project]
+name = "spec-workflow"
+version = "0.1.0"
+description = "Spec 驱动开发工作流（编排引擎 + 质量门禁 + skills 分发）"
+# 开发环境统一 Python 3.12（uv 托管；见 README「开发环境」）
+requires-python = ">=3.12"
+# ★ 红线：运行时零第三方依赖 —— skills/ 下的脚本必须能被裸 Python 直接执行
+dependencies = []
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3",
+  "ruff>=0.6",
+]
+# 可选：tree-sitter 语言解析后端（dev-docs 的 C++/Java/JS/Shell 等符号级提取）
+# 用法：uv sync --group ts
+ts = [
+  "tree-sitter>=0.26",
+  "tree-sitter-cpp>=0.23",
+  "tree-sitter-c>=0.23",
+  "tree-sitter-java",
+  "tree-sitter-javascript",
+  "tree-sitter-bash",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "skills/dev-docs/tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+exclude = ["__pycache__", ".venv", "docs"]
+
+[tool.ruff.lint]
+# E/W = pycodestyle（样式与可疑写法）、F = pyflakes（未用导入/未定义名等真实缺陷）
+select = ["E", "W", "F"]
+
+[tool.uv]
+# 本仓库不打包发布（分发走 install.py 拷贝 skills/），避免 uv 尝试构建工程
+package = false
