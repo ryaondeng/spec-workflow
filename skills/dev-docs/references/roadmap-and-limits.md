@@ -19,6 +19,8 @@
 | L4 | 不表达架构分层（controller/service/dao） | 待定（v2 方向） |
 | L5 | 无"对外接口面"专项产物（api-surface） | 待定（v2 方向） |
 | L6 | 早期存量 api 标题重复 | ✅ 已随 v1.2 迁移消除（api 层取消） |
+| L7 | 语言/生态覆盖仅内置 Python 可靠 + 少量正则启发；ROS/C++/msg-srv 等无指纹 | 🟡 v1.3 部分解决：文件全集 + LLM 语义地图（.semantic-map.json）+ register 登记通道（SYM/EPT/ITF，不算 phantom）兜底任意语言；tree-sitter 符号级提取（C++ 等）为 A2 待办 |
+| L8 | 非 git 仓库无 source_commit → stale/drift 失效、"同一次提交"红线无法满足 | 🟡 v1.3 部分解决：inventory 全文件哈希 manifest 进 baseline，`check --drift` 非 git 可检出变更；stale 判定仍以 git commit 为主，非 git 靠 drift + 红线降级（同批变更+用户快照） |
 
 ## 3. v2 方向（评估中，未开工）
 

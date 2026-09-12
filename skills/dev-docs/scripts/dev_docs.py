@@ -20,7 +20,7 @@ SKILL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEMPLATES = os.path.join(SKILL_DIR, "templates")
 BEG = "<!-- AI-GEN:BEGIN -->"
 END = "<!-- AI-GEN:END -->"
-ANCHOR = re.compile(r"<!--\s*@(FUN-\d+|API-\d+)\s*-->")   # v1.2：ID 下沉为隐藏锚点
+ANCHOR = re.compile(r"<!--\s*@([A-Z]+-\d+)\s*-->")   # v1.3：kind 前缀放开（FUN/API/SYM/EPT/ITF…）
 MARK = "<!-- TODO AI 依源码填写"   # 语义未填占位（填充度报告用）
 SYM_TODO = "<!-- TODO AI 依源码填写（evidence: 推断/假设需注明） -->"
 EP_TODO = "<!-- TODO AI 依源码填写；示例取 tested_by 对应测试 -->"
@@ -302,14 +302,16 @@ def compose(meta, pre, inside, post):
 
 # ---------------- inventory 命令 ----------------
 
-def cmd_inventory(root, out, extra_exclude, quiet=False):
-    data = inv.build_inventory(root, extra_exclude)
+def cmd_inventory(root, out, extra_exclude, quiet=False, project_type="auto"):
+    data = inv.build_inventory(root, extra_exclude, project_type=project_type)
     data["_inventory_hash"] = inv.canon_hash(
         {k: v for k, v in data.items() if k != "_inventory_hash"})
     inv_dir = os.path.join(out, "inventory.json")
     json_save(inv_dir, data)
     if not quiet:
         print("inventory -> %s" % os.path.relpath(inv_dir, root))
+        print("  project_type: %s | files(全集): %d" %
+              (data.get("project_type", "?"), len(data.get("files", []))))
         print("  modules: %d, symbols: %d, endpoints: %d, tests: %d, langs: %s"
               % (len(data["modules"]), len(data["symbols"]),
                  len(data["endpoints"]), len(data["tests"]),
@@ -326,10 +328,10 @@ def load_inventory(out):
 
 # ---------------- 文档生成（extract） ----------------
 
-def ensure_inventory(out, root, extra_exclude):
+def ensure_inventory(out, root, extra_exclude, project_type="auto"):
     data = load_inventory(out)
     if data is None:
-        data = cmd_inventory(root, out, extra_exclude)
+        data = cmd_inventory(root, out, extra_exclude, project_type=project_type)
     return data
 
 
@@ -454,6 +456,106 @@ def inventory_ids(inv_data):
     return ids
 
 
+# ---------------- 人工/低置信登记（.registered.json，register 命令维护） ----------------
+
+REG_FILE = ".registered.json"
+REG_PREFIX = {"symbol": "SYM", "endpoint": "EPT", "interface": "ITF"}
+
+
+def load_registered(out):
+    data = json_load(os.path.join(out, REG_FILE)) or {}
+    items = data.get("items", []) if isinstance(data, dict) else []
+    return items if isinstance(items, list) else []
+
+
+def registered_ids(items):
+    return {it["id"] for it in items if it.get("id")}
+
+
+def next_reg_id(items, kind):
+    prefix = REG_PREFIX.get(kind, "SYM")
+    n = 0
+    for it in items:
+        rid = it.get("id") or ""
+        if rid.startswith(prefix + "-"):
+            try:
+                n = max(n, int(rid.split("-", 1)[1]))
+            except ValueError:
+                pass
+    return "%s-%03d" % (prefix, n + 1)
+
+
+def cmd_register(root, out, kind, name, src, line=0, signature=None, note=None):
+    """登记一个语言指纹未覆盖的符号/端点/接口（必须指向真实源文件，防编造）。
+    line 命中名字 -> confidence=verified；否则 unverified（抽审优先）。"""
+    if kind not in REG_PREFIX:
+        raise SystemExit("register: --kind 须为 %s" % "/".join(REG_PREFIX))
+    if not name or not src:
+        raise SystemExit("register: 需要 --name <限定名> --src <相对项目根的源文件>")
+    rel_file = src.replace("\\", "/")
+    absf = os.path.join(root, rel_file)
+    if not os.path.isfile(absf):
+        raise SystemExit("register: 源文件不存在: %s（登记必须指向真实文件，防编造）" % rel_file)
+    items = load_registered(out)
+    rid = next_reg_id(items, kind)
+    conf = "manual"
+    if line:
+        try:
+            with open(absf, encoding="utf-8", errors="replace") as f:
+                lines = f.read().splitlines()
+            # 名字末段（支持 Foo::bar / foo.bar / bar）与源码行比对
+            needle = name.replace("::", ".").split(".")[-1]
+            if 0 < line <= len(lines) and needle in lines[line - 1]:
+                conf = "verified"
+            else:
+                print("  ! line=%s 未在源文件对应行命中名字——登记为未核验，抽审时优先核对" % line)
+        except OSError:
+            pass
+    item = {"id": rid, "kind": kind, "name": name, "file": rel_file,
+            "line": int(line or 0), "confidence": conf}
+    if signature:
+        item["signature"] = signature
+    if note:
+        item["note"] = note
+    items.append(item)
+    json_save(os.path.join(out, REG_FILE), {"version": 1, "items": items})
+    print("已登记 %s（kind=%s，file %s:%s，confidence=%s）" %
+          (rid, kind, rel_file, item["line"], conf))
+    print("建议运行: check --dir <目标项目>")
+    return 0
+
+
+# ---------------- 语义地图（LLM 提取的产物，.semantic-map.json） ----------------
+
+SEMANTIC_MAP_FILE = ".semantic-map.json"
+
+
+def load_semantic_map(out):
+    smap = json_load(os.path.join(out, SEMANTIC_MAP_FILE))
+    return smap if isinstance(smap, dict) else None
+
+
+def file_coverage(inv_data, smap, out_rel=None):
+    """文件级防漏统计：全集 files vs 语义地图归属/忽略。
+    out_rel=产物目录相对项目根路径（如 docs/dev-docs），其自身文件不算待归属。
+    返回 (total, covered, uncovered, ignored)。smap 缺失时 uncovered=全集（除产物）。"""
+    files = [f["path"] for f in inv_data.get("files", [])]
+    if out_rel and out_rel not in (".", ""):
+        prefix = out_rel.replace("\\", "/") + "/"
+        files = [p for p in files if not p.startswith(prefix)]
+    if smap is None:
+        return len(files), 0, files, 0
+    covered, ignored = set(), set()
+    for m in smap.get("modules", []) or []:
+        for p in m.get("files", []) or []:
+            covered.add(p.replace("\\", "/"))
+        for it in m.get("ignored_files", []) or []:
+            p = it["path"] if isinstance(it, dict) else it
+            ignored.add(p.replace("\\", "/"))
+    uncovered = [p for p in files if p not in covered and p not in ignored]
+    return len(files), len(files) - len(uncovered), uncovered, len(ignored)
+
+
 def stale_docs(inv_data, out):
     """文档 frontmatter.source_commit 落后于当前提交 -> stale。非 git 时不判。"""
     if not inv_data.get("is_git") or not inv_data.get("source_commit"):
@@ -478,9 +580,21 @@ def drift_diff(inv_now, out):
     if not base:
         return None
     changed = []
-    old_hashes = base.get("code_file_hashes") or {}
-    for rel, h in (inv_now.get("code_file_hashes") or {}).items():
+    old_hashes = dict(base.get("code_file_hashes") or {})
+    old_hashes.update(base.get("files_hashes") or {})   # v1.3：全文件基线（非代码文件也参与漂移）
+    now_hashes = dict(inv_now.get("code_file_hashes") or {})
+    now_hashes.update(inv_now.get("files_hashes") or {})
+    # 产物目录自身（docs/<out>/）的变更不算代码漂移
+    out_rel = ""
+    try:
+        out_rel = os.path.relpath(out, inv_now.get("root") or ".").replace("\\", "/")
+    except ValueError:
+        out_rel = ""
+    out_prefix = (out_rel + "/") if out_rel not in (".", "") else None
+    for rel, h in now_hashes.items():
         if old_hashes.get(rel) != h:
+            if out_prefix and rel.startswith(out_prefix):
+                continue
             changed.append(rel)
     old_syms = set(base.get("symbol_ids") or [])
     now_syms = {s["id"] for s in inv_now.get("symbols", [])} | \
@@ -512,13 +626,31 @@ def drift_diff(inv_now, out):
 
 def analyze(inv_data, out, drift=False):
     reg, doc_files = collect_registered(out)
-    want = inventory_ids(inv_data)
+    reg_items = load_registered(out)
+    # 对账新口径（v1.3）：登记集 = 自动枚举 ∪ 人工登记；文档锚点不在登记集才算 phantom
+    want = inventory_ids(inv_data) | registered_ids(reg_items)
     orphan_syms = [s["id"] for s in inv_data.get("symbols", [])
                    if s.get("public", True) and s["id"] not in reg]
     orphan_eps = [e["id"] for e in inv_data.get("endpoints", [])
                   if e["id"] not in reg]
     phantom = sorted(reg - want)
+    # 登记指向不存在的源文件 = ERROR（登记腐化防线；inventory 无 files 字段时跳过）
+    if inv_data.get("files") is not None:
+        all_files = {f["path"] for f in inv_data["files"]}
+        reg_file_errors = ["%s -> %s（文件不在项目全集）" % (it["id"], it["file"])
+                           for it in reg_items
+                           if it.get("file") and it["file"] not in all_files]
+    else:
+        reg_file_errors = []
     stale = stale_docs(inv_data, out)
+    smap = load_semantic_map(out)
+    out_rel = ""
+    if inv_data.get("root") and out:
+        try:
+            out_rel = os.path.relpath(out, inv_data["root"]).replace("\\", "/")
+        except ValueError:
+            out_rel = ""
+    f_total, f_covered, f_uncovered, f_ignored = file_coverage(inv_data, smap, out_rel)
     drift_info = None
     if drift:
         drift_info = drift_diff(inv_data, out)
@@ -527,6 +659,10 @@ def analyze(inv_data, out, drift=False):
         "phantom": phantom, "stale": stale,
         "registered_count": len(reg), "doc_count": len(doc_files),
         "want_count": len(want), "drift": drift_info,
+        "reg_items": reg_items, "reg_file_errors": reg_file_errors,
+        "has_semantic_map": smap is not None,
+        "file_total": f_total, "file_covered": f_covered,
+        "file_uncovered": f_uncovered, "file_ignored": f_ignored,
     }
 
 
@@ -534,10 +670,25 @@ def cmd_check(inv_data, out, drift, root=None):
     if inv_data is None:
         raise SystemExit("缺少 inventory.json，先运行 inventory 或带 --drift 重扫")
     rep = analyze(inv_data, out, drift=drift)
-    problems = rep["orphan_syms"] + rep["orphan_eps"] + rep["phantom"] + rep["stale"]
+    problems = (rep["orphan_syms"] + rep["orphan_eps"] + rep["phantom"]
+                + rep["stale"] + rep["reg_file_errors"])
     print("=== dev-docs check ===")
-    print("登记符号/端点：%d / %d　文档文件：%d" %
-          (rep["registered_count"], rep["want_count"], rep["doc_count"]))
+    print("登记符号/端点：%d / %d　文档文件：%d　人工登记：%d" %
+          (rep["registered_count"], rep["want_count"], rep["doc_count"],
+           len(rep["reg_items"])))
+    # 文件级防漏（LLM 提取的覆盖门禁素材；缺失地图仅提示，不作为门禁）
+    if rep["has_semantic_map"]:
+        print("文件覆盖：%d / %d（ignored %d，未覆盖 %d）" %
+              (rep["file_covered"], rep["file_total"],
+               rep["file_ignored"], len(rep["file_uncovered"])))
+        if rep["file_uncovered"]:
+            for p in rep["file_uncovered"][:10]:
+                print("    ? 未归属: %s" % p)
+            if len(rep["file_uncovered"]) > 10:
+                print("    ... 共 %d（补 .semantic-map.json 的 files/ignored_files）"
+                      % len(rep["file_uncovered"]))
+    else:
+        print("文件覆盖：语义地图缺失（.semantic-map.json）——LLM 提取前请先建图（提示，不作为门禁）")
     unf, per = unfilled_todo_count(out)
     if unf:
         worst = max(sorted(per.items()), key=lambda kv: kv[1])
@@ -562,7 +713,8 @@ def cmd_check(inv_data, out, drift, root=None):
                 print("drift: 无漂移 ✓")
     for label, items in (("orphan(有码无文)", rep["orphan_syms"] + rep["orphan_eps"]),
                          ("phantom(有文无码)", rep["phantom"]),
-                         ("stale(文档过期)", rep["stale"])):
+                         ("stale(文档过期)", rep["stale"]),
+                         ("reg_file_error(登记指向不存在的文件)", rep["reg_file_errors"])):
         if items:
             print("[%s] %d 项:" % (label, len(items)))
             for it in items[:20]:
@@ -621,6 +773,7 @@ def cmd_report(inv_data, root, out):
         "source_commit": inv_data.get("source_commit") or "",
         "inventory_hash": inv_data.get("_inventory_hash") or "",
         "code_file_hashes": inv_data.get("code_file_hashes") or {},
+        "files_hashes": inv_data.get("files_hashes") or {},
         "symbol_ids": sorted(({s["id"] for s in inv_data.get("symbols", [])}
                               | {e["id"] for e in inv_data.get("endpoints", [])})),
         "docs": doc_hashes,
@@ -649,8 +802,10 @@ def main(argv=None):
     _force_utf8_output()
     import argparse
     ap = argparse.ArgumentParser(prog="dev_docs.py", description="dev-docs 从代码库逆向生成文档")
-    ap.add_argument("command", choices=["inventory", "extract", "promote", "check", "report"],
-                    help="inventory 盘点 | extract 生成 draft | promote draft 转正 | check 对账/漂移 | report 索引+基线")
+    ap.add_argument("command", choices=["inventory", "extract", "promote", "check",
+                                        "report", "register"],
+                    help="inventory 盘点 | extract 生成 draft | promote draft 转正 | "
+                         "check 对账/漂移 | report 索引+基线 | register 人工登记")
     ap.add_argument("--dir", default=".", help="目标项目目录（默认当前目录；git 仓库内自动取仓库根）")
     ap.add_argument("--out", default="dev-docs", help="输出子目录名（docs/<out>，默认 dev-docs）")
     ap.add_argument("--layer", choices=["architecture", "reference", "data"], help="extract 的层")
@@ -658,26 +813,41 @@ def main(argv=None):
     ap.add_argument("--exclude", action="append", default=[], help="额外排除模式（可多次）")
     ap.add_argument("--drift", action="store_true", help="check 时重扫与基线对比漂移")
     ap.add_argument("--file", help="promote 的 draft 文件路径（相对 docs/<out>/ 或绝对路径）")
+    ap.add_argument("--project-type", choices=["auto", "catkin", "generic"], default="auto",
+                    help="项目类型（auto=自动嗅探 package.xml；catkin 追加 build/devel/install/log 排除）")
+    ap.add_argument("--kind", help="register 的登记类型 symbol|endpoint|interface")
+    ap.add_argument("--name", help="register 的限定名（如 RosNode::spin 或 /cmd_vel）")
+    ap.add_argument("--src", help="register 的源文件（相对项目根；必须真实存在）")
+    ap.add_argument("--line", type=int, default=0, help="register 的源码行号（用于核验）")
+    ap.add_argument("--signature", help="register 的签名/定义原文（可选）")
+    ap.add_argument("--note", help="register 的备注（来源/抽审结论，可选）")
     a = ap.parse_args(argv)
 
     root = resolve_root(a.dir)
     out = outdir(root, a.out)
 
     if a.command == "inventory":
-        cmd_inventory(root, out, a.exclude)
+        cmd_inventory(root, out, a.exclude, project_type=a.project_type)
     elif a.command == "extract":
         if not a.layer:
             raise SystemExit("extract 需要 --layer architecture|reference|data")
         # 复用已有 inventory.json（含当时 exclude），避免再次扫描产出漂移快照
-        data = ensure_inventory(out, root, a.exclude)
+        data = ensure_inventory(out, root, a.exclude, project_type=a.project_type)
         extract_layer(data, root, out, a.layer, a.module)
     elif a.command == "promote":
         if not a.file:
             raise SystemExit("promote 需要 --file <draft 路径>（相对 docs/<out>/ 或绝对路径）")
         cmd_promote(out, a.file)
+    elif a.command == "register":
+        if not (a.kind and a.name and a.src):
+            raise SystemExit("register 需要 --kind symbol|endpoint|interface "
+                             "--name <限定名> --src <相对项目根文件> [--line N] [--signature S] [--note N]")
+        return cmd_register(root, out, a.kind, a.name, a.src,
+                            line=a.line, signature=a.signature, note=a.note)
     elif a.command == "check":
         if a.drift:
-            data = cmd_inventory(root, out, a.exclude, quiet=True)
+            data = cmd_inventory(root, out, a.exclude, quiet=True,
+                                 project_type=a.project_type)
         else:
             data = load_inventory(out)
         return cmd_check(data, out, a.drift, root)

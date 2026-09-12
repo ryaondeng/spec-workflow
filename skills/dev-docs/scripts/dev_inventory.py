@@ -38,6 +38,11 @@ EXT_LANG = {
 # 参与端点发现的语言（后端常见）
 ROUTE_LANGS = ("python", "java", "typescript", "javascript")
 
+# catkin/ROS 工作空间的构建产物目录（project-type=catkin 时并入排除清单）
+CATKIN_EXCLUDE = ["build", "devel", "install", "log"]
+# 全文件清单的单文件大小上限：超过则跳过并记 note（防二进制/构建产物撑爆清单）
+ALL_FILES_MAX_BYTES = 2 * 1024 * 1024
+
 DEFAULT_EXCLUDE = [
     ".git", "node_modules", "__pycache__", "dist", "build", "out", "target",
     ".venv", "venv", "vendor", ".idea", ".vscode", ".codebuddy", ".specworkflow",
@@ -145,6 +150,55 @@ def detect_langs(root, extra_exclude):
         lang, level = EXT_LANG[ext]
         langs.setdefault(lang, level)  # 首次出现的可靠性级别
     return dict(langs)
+
+
+def detect_project_type(root, extra_exclude):
+    """auto 检测项目类型：目录树中发现 package.xml -> catkin，否则 generic。"""
+    for dirpath, dirnames, filenames in os.walk(root):
+        keep = []
+        for d in sorted(dirnames):
+            rel = os.path.relpath(os.path.join(dirpath, d), root)
+            if not is_excluded(rel, extra_exclude):
+                keep.append(d)
+        dirnames[:] = keep
+        if "package.xml" in filenames:
+            return "catkin"
+    return "generic"
+
+
+def iter_all_files(root, extra_exclude):
+    """全文件清单（不经 EXT_LANG 过滤；L0 防漏与漂移基线的事实源）。
+    返回 (entries, hashes, notes)：
+      entries=[{path, bytes, lang}]（lang=None 表示未登记语言，如 .msg/.cpp）；
+      hashes={rel: sha256}（非 git 漂移基线）；
+      notes=[{file, note}]（跳过的超大文件）。
+    排序稳定；目录剪枝与 iter_code_files 一致。"""
+    entries, hashes, notes = [], {}, []
+    for dirpath, dirnames, filenames in os.walk(root):
+        keep = []
+        for d in sorted(dirnames):
+            rel = os.path.relpath(os.path.join(dirpath, d), root)
+            if not is_excluded(rel, extra_exclude):
+                keep.append(d)
+        dirnames[:] = keep
+        for fn in sorted(filenames):
+            fp = os.path.join(dirpath, fn)
+            rel = _rel(root, fp)
+            if is_excluded(rel, extra_exclude):
+                continue
+            try:
+                st = os.stat(fp)
+            except OSError:
+                continue
+            if st.st_size > ALL_FILES_MAX_BYTES:
+                notes.append({"file": rel,
+                              "note": "skipped_large %d bytes" % st.st_size})
+                continue
+            ext = os.path.splitext(fn)[1].lower()
+            lang = EXT_LANG.get(ext, (None, None))[0]
+            entries.append({"path": rel, "bytes": st.st_size, "lang": lang})
+            hashes[rel] = sha256_file(fp)
+    return entries, hashes, notes
 
 
 def _rel(root, path):
@@ -462,10 +516,16 @@ def collect_tests(root, extra_exclude):
 
 # ---------------- 主构建 ----------------
 
-def build_inventory(root, extra_exclude=None):
-    """构建 inventory 结构（不落盘）。"""
+def build_inventory(root, extra_exclude=None, project_type="auto"):
+    """构建 inventory 结构（不落盘）。project_type: auto|catkin|generic。"""
     extra = extra_exclude or []
     root = os.path.abspath(root)
+    ptype = project_type
+    if ptype == "auto":
+        ptype = detect_project_type(root, extra)
+    if ptype == "catkin":
+        # catkin 构建产物目录并入排除（对所有扫描生效：代码/全文件/模块/依赖）
+        extra = list(extra) + [p for p in CATKIN_EXCLUDE if p not in extra]
     modules = build_modules(root, extra)
     mod_by_id = {m["id"]: m for m in modules}
     langs = detect_langs(root, extra)
@@ -534,6 +594,10 @@ def build_inventory(root, extra_exclude=None):
 
     tests = collect_tests(root, extra)
 
+    # L0 全文件清单（含未登记语言，如 .cpp/.msg/.srv）+ 非 git 漂移基线
+    files, files_hashes, file_notes = iter_all_files(root, extra)
+    confidence_notes.extend(file_notes)
+
     # 为符号稳定 ID：扫描顺序已稳定（排序 + 文件内 AST 顺序），但多文件时 n 跨文件计数需要全局。
     # 处理：python 文件内 ID 是每文件局部；改成全局分配会破坏已生成文档锚点。
     # 结论：ID 采用 "<MOD>:<seq>" 稳定于排序文件顺序；为兼容锚点简单化，此处保留文件内局部 ID，
@@ -541,6 +605,7 @@ def build_inventory(root, extra_exclude=None):
     # 允许，check 以 (id, file) 判别；文档登记以标题锚点（含 file 名）避免歧义。
     inventory = {
         "schema_version": SCHEMA_VERSION,
+        "project_type": ptype,
         "langs": langs,
         "source_commit": head_commit(root),
         "is_git": is_git_root(root),
@@ -551,6 +616,8 @@ def build_inventory(root, extra_exclude=None):
         "endpoints": endpoints,
         "tests": tests,
         "code_file_hashes": code_file_hashes,
+        "files": files,
+        "files_hashes": files_hashes,
         "confidence": {"notes": confidence_notes},
     }
     return inventory

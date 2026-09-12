@@ -29,8 +29,26 @@ docs/dev-docs/
 | reference | reference/<slug>.md | =MOD-id | 该模块全部 FUN/API 的隐藏锚点 `<!-- @FUN-xxx -->` |
 | data | data/<slug>.md | DATA-MOD-xxx | 无硬性锚点（可选） |
 
-- ID 由 inventory 分配，**唯一且稳定**：`FUN-001…`（函数/方法）、`API-001…`（端点）、`MOD-000/001…`（模块）、`ARCH-001`。
-- **登记锚点格式（v1.2，勿改）**：符号卡片标题只写语义名（`### Pico.run_tool`），ID 以隐藏注释放在签名/handler 行尾：`<!-- @FUN-135 -->` / `<!-- @API-002 -->`。删除一个符号的卡片 = check 报 orphan。
+- ID 由 inventory 分配，**唯一且稳定**：`FUN-001…`（函数/方法）、`API-001…`（端点）、`MOD-000/001…`（模块）、`ARCH-001`；
+  人工/低置信登记（register 命令）分配 `SYM-…`（符号）/ `EPT-…`（端点）/ `ITF-…`（接口契约资产），存于 `.registered.json`。
+- **登记锚点格式（v1.2 引入，v1.3 放开 kind 前缀，勿改）**：符号卡片标题只写语义名（`### Pico.run_tool`），ID 以隐藏注释放在签名/handler 行尾：`<!-- @FUN-135 -->` / `<!-- @API-002 -->` / `<!-- @SYM-001 -->`。删除一个符号的卡片 = check 报 orphan。
+- **对账口径（v1.3）**：登记集 = inventory 自动枚举 ∪ `.registered.json` 人工登记；文档锚点不在登记集 → phantom（编造仍拦）；register 条目指向的源文件消失 → ERROR（登记腐化）。
+
+## 语义地图（.semantic-map.json，LLM 提取产物）
+
+```json
+{"version": 1,
+ "modules": [{"name": "ncu", "path": "src/ncu",
+   "responsibility": "一句话职责",
+   "files": ["src/ncu/main.cpp", "src/ncu/Demo.srv"],
+   "ignored_files": [{"path": "third_party/x.lib", "reason": "vendored"}],
+   "key_symbols": [{"name": "NCU::spin", "kind": "method", "file": "src/ncu/main.cpp", "line": 12}],
+   "interfaces": [{"kind": "srv", "name": "ncu/Demo", "file": "src/ncu/Demo.srv"}],
+   "depends_on": ["其他模块名"], "tests": ["test/..."]}]}
+```
+
+- 由 AI 分批读码产出、**用户确认后**生效；`check` 用它统计**文件归属覆盖率**并输出未归属文件清单（缺地图仅提示不门禁）
+- 纪律：每个条目必须带来源 `file`；签名/字段引用源码原文；看不见的写 "not visible in sources"，禁止凭记忆补
 - 详档内部结构（固定）：`## 概览（四问）` → `## 符号索引`（表格：ID｜符号｜类型｜说明，机器全量生成）→ `## 详细契约`（按 `## 模块级函数` / `## 类：<名>` / `## HTTP 端点` 分节）。
 - `MOD-000` 为仓库根自身代码模块（如根目录脚本/CI），可空但应保留占位或 retired。
 

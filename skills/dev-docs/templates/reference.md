@@ -28,6 +28,7 @@ status: {status}
 
 ## 详细契约
 
+<!-- 分节顺序：模块级函数 → 类 → HTTP 端点 → 接口契约资产（ROS 话题/服务/消息类型，条目来自语义地图或 register 登记，每条带来源文件） -->
 {detail_rows}
 <!-- AI-GEN:END -->
 

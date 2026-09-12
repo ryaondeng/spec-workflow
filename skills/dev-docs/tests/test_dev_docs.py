@@ -222,5 +222,171 @@ class TestDocsFilesPresence(unittest.TestCase):
                 os.path.join(skill, "scripts", s)))
 
 
+class P3Case(TmpCase):
+    """v1.3 通用化：文件全集 / register / 对账新口径 / 语义地图 / 非 git 漂移。"""
+
+    def _proj(self, files, name="proj"):
+        root = os.path.join(self.tmp, name)
+        write_tree(root, files)
+        return root
+
+    def test_iter_all_files_includes_unknown_ext(self):
+        root = self._proj({"a.py": "x = 1\n", "src/b.msg": "float32 x\n",
+                           "data/blob.bin": "raw"})
+        entries, hashes, notes = inv.iter_all_files(root, [])
+        paths = {e["path"] for e in entries}
+        self.assertIn("a.py", paths)
+        self.assertIn("src/b.msg", paths)
+        self.assertIn("data/blob.bin", paths)
+        langs = {e["path"]: e["lang"] for e in entries}
+        self.assertEqual(langs["a.py"], "python")
+        self.assertIsNone(langs["src/b.msg"])
+        self.assertEqual(hashes["a.py"], inv.sha256_file(os.path.join(root, "a.py")))
+
+    def test_iter_all_files_deterministic(self):
+        root = self._proj({"a.py": "1", "b/c.msg": "2", "b/d.cpp": "3"})
+        e1, h1, _ = inv.iter_all_files(root, [])
+        e2, h2, _ = inv.iter_all_files(root, [])
+        self.assertEqual([x["path"] for x in e1], [x["path"] for x in e2])
+        self.assertEqual(h1, h2)
+
+    def test_detect_project_type(self):
+        root = self._proj({"src/ncu/package.xml": "<package/>",
+                           "src/ncu/x.cpp": "int main(){}"})
+        self.assertEqual(inv.detect_project_type(root, []), "catkin")
+        root2 = self._proj({"src/x.py": "x=1"}, name="proj2")
+        self.assertEqual(inv.detect_project_type(root2, []), "generic")
+
+    def test_inventory_files_and_project_type(self):
+        root = self._proj({"src/x.py": "def f():\n    pass\n",
+                           "src/Demo.srv": "float32 x\n---\nbool ok\n"})
+        data = inv.build_inventory(root, project_type="auto")
+        self.assertEqual(data["project_type"], "generic")
+        paths = {f["path"] for f in data["files"]}
+        self.assertIn("src/Demo.srv", paths)
+        self.assertIn("src/x.py", paths)
+        self.assertEqual(data["files_hashes"]["src/x.py"],
+                         inv.sha256_file(os.path.join(root, "src/x.py")))
+        # 强制 catkin：build/（默认排除）与 devel/（catkin 专属排除）都被排除
+        write_tree(root, {"build/junk.o": "junk", "devel/x.txt": "x"})
+        data2 = inv.build_inventory(root, project_type="catkin")
+        self.assertEqual(data2["project_type"], "catkin")
+        self.assertFalse(any(f["path"].startswith("build/") for f in data2["files"]))
+        self.assertFalse(any(f["path"].startswith("devel/") for f in data2["files"]))
+        self.assertIn("build", data2["excluded"])
+        self.assertIn("devel", data2["excluded"])
+        # generic 下 devel/ 不被自动排除（build/ 属默认排除，两种类型都排）
+        data3 = inv.build_inventory(root, project_type="generic")
+        self.assertTrue(any(f["path"].startswith("devel/") for f in data3["files"]))
+        self.assertFalse(any(f["path"].startswith("build/") for f in data3["files"]))
+
+    def test_anchor_generalized(self):
+        out = os.path.join(self.tmp, "docs", "dev-docs")
+        write_tree(out, {"reference/x.md": "<!-- @SYM-001 -->\n<!-- @API-001 -->\n"})
+        reg, _ = dev_docs.collect_registered(out)
+        self.assertIn("SYM-001", reg)
+        self.assertIn("API-001", reg)
+
+    def test_register_verified_and_increment(self):
+        root = self._proj({"src/f.cpp": "class NCU {\n  void spin();\n};\n"})
+        out = dev_docs.outdir(root, "dev-docs")
+        rc = dev_docs.cmd_register(root, out, "symbol", "NCU::spin",
+                                   "src/f.cpp", line=2)
+        self.assertEqual(rc, 0)
+        items = dev_docs.load_registered(out)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["id"], "SYM-001")
+        self.assertEqual(items[0]["confidence"], "verified")
+        # 未命中行号 -> manual；序号自增
+        dev_docs.cmd_register(root, out, "interface", "/cmd_vel",
+                              "src/f.cpp", line=1)
+        items = dev_docs.load_registered(out)
+        self.assertEqual(items[1]["id"], "ITF-001")
+        self.assertEqual(items[1]["confidence"], "manual")
+        dev_docs.cmd_register(root, out, "symbol", "NCU::stop", "src/f.cpp", line=3)
+        items = dev_docs.load_registered(out)
+        self.assertEqual(items[-1]["id"], "SYM-002")
+
+    def test_register_missing_file_rejected(self):
+        root = self._proj({"a.py": "x=1"})
+        out = dev_docs.outdir(root, "dev-docs")
+        with self.assertRaises(SystemExit):
+            dev_docs.cmd_register(root, out, "symbol", "X", "src/ghost.cpp")
+        self.assertEqual(dev_docs.load_registered(out), [])
+
+    def test_register_bad_kind_rejected(self):
+        root = self._proj({"a.py": "x=1"})
+        out = dev_docs.outdir(root, "dev-docs")
+        with self.assertRaises(SystemExit):
+            dev_docs.cmd_register(root, out, "module", "X", "a.py")
+
+    def test_phantom_new_semantics(self):
+        root = self._proj({"src/f.cpp": "void spin(){}\n"})
+        out = dev_docs.outdir(root, "dev-docs")
+        dev_docs.cmd_register(root, out, "symbol", "spin", "src/f.cpp", line=1)
+        write_tree(out, {"reference/x.md": "<!-- @SYM-001 -->\n<!-- @SYM-999 -->\n"})
+        data = inv.build_inventory(root)
+        rep = dev_docs.analyze(data, out)
+        self.assertNotIn("SYM-001", rep["phantom"])   # 已登记 -> 不判 phantom
+        self.assertIn("SYM-999", rep["phantom"])      # 无登记无证据 -> 仍拦
+
+    def test_registered_file_error(self):
+        root = self._proj({"src/f.cpp": "void spin(){}\n"})
+        out = dev_docs.outdir(root, "dev-docs")
+        dev_docs.cmd_register(root, out, "symbol", "spin", "src/f.cpp", line=1)
+        os.remove(os.path.join(root, "src/f.cpp"))     # 登记后源文件消失 -> 腐化
+        data = inv.build_inventory(root)
+        rep = dev_docs.analyze(data, out)
+        self.assertTrue(any("SYM-001" in e for e in rep["reg_file_errors"]))
+
+    def test_semantic_map_coverage(self):
+        root = self._proj({"src/a.py": "x=1", "src/b.msg": "float32 x\n",
+                           "third_party/v.lib": "bin"})
+        out = dev_docs.outdir(root, "dev-docs")
+        data = inv.build_inventory(root)
+        # 无地图：uncovered = 全集
+        rep = dev_docs.analyze(data, out)
+        self.assertFalse(rep["has_semantic_map"])
+        self.assertEqual(rep["file_covered"], 0)
+        # 地图覆盖部分 + 忽略 vendor
+        write_tree(out, {"reference/x.md": ""})
+        dev_docs.json_save(os.path.join(out, ".semantic-map.json"), {
+            "version": 1,
+            "modules": [{"name": "src", "path": "src",
+                         "files": ["src/a.py"],
+                         "ignored_files": [{"path": "third_party/v.lib",
+                                            "reason": "vendored"}]}]})
+        rep = dev_docs.analyze(data, out)
+        self.assertTrue(rep["has_semantic_map"])
+        self.assertEqual(rep["file_total"], 3)
+        self.assertEqual(rep["file_covered"], 2)
+        self.assertEqual(rep["file_uncovered"], ["src/b.msg"])
+
+    def test_check_passes_without_semantic_map(self):
+        root = self._proj({"src/a.py": "def f():\n    pass\n"})
+        out = dev_docs.outdir(root, "dev-docs")
+        dev_docs.cmd_inventory(root, out, [], quiet=True)
+        # 无语义地图：check 仍可跑（提示缺失不门禁）；文档登记锚点后无 orphan/phantom -> PASS
+        write_tree(out, {"reference/x.md": "<!-- @FUN-001 -->\n"})
+        rc = dev_docs.cmd_check(dev_docs.load_inventory(out), out, drift=False, root=root)
+        self.assertEqual(rc, 0)
+
+    def test_drift_nongit_manifest(self):
+        root = self._proj({"src/a.py": "def f():\n    pass\n",
+                           "src/Demo.srv": "float32 x\n"})
+        out = dev_docs.outdir(root, "dev-docs")
+        data = dev_docs.cmd_inventory(root, out, [], quiet=True)
+        dev_docs.cmd_report(data, root, out)            # 建 baseline（非 git 也写 manifest）
+        # 改一个"非代码文件"（.srv）+ 一个代码文件
+        write_tree(root, {"src/Demo.srv": "float32 x\nfloat32 y\n",
+                          "src/a.py": "def f():\n    return 1\n"})
+        data2 = dev_docs.cmd_inventory(root, out, [], quiet=True)
+        rep = dev_docs.analyze(data2, out, drift=True)
+        d = rep["drift"]
+        self.assertIsNotNone(d)
+        self.assertIn("src/Demo.srv", d["changed_files"])   # 非 git 也能检出
+        self.assertIn("src/a.py", d["changed_files"])
+
+
 if __name__ == "__main__":
     unittest.main()
