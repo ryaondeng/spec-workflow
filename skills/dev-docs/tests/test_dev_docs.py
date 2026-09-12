@@ -180,7 +180,8 @@ class TestAnalyze(TmpCase):
         out = os.path.join(self.tmp, "out")
         os.makedirs(out)
         self._doc(out, "reference/MOD-001.md",
-                  "### a\n- 签名 <!-- @FUN-001 -->\n### b\n- 签名 <!-- @FUN-002 -->\n### GET /x\n- handler <!-- @API-001 -->\n")
+                  "### a\n- 签名 <!-- @FUN-001 -->\n### b\n- 签名 <!-- @FUN-002 -->\n"
+                  "### GET /x\n- handler <!-- @API-001 -->\n")
         rep = dev_docs.analyze(self._inv(), out)
         self.assertEqual(rep["orphan_syms"] + rep["orphan_eps"] + rep["phantom"], [])
 
@@ -198,7 +199,8 @@ class TestAnalyze(TmpCase):
         out = os.path.join(self.tmp, "out")
         os.makedirs(out)
         self._doc(out, "reference/MOD-001.md",
-                  "### a\n- 签名 <!-- @FUN-001 -->\n### b\n- 签名 <!-- @FUN-002 -->\n### GET /x\n- handler <!-- @API-001 -->\n")
+                  "### a\n- 签名 <!-- @FUN-001 -->\n### b\n- 签名 <!-- @FUN-002 -->\n"
+                  "### GET /x\n- handler <!-- @API-001 -->\n")
         # 文档 source_commit=deadbeef < 当前 HEAD=aaaaaa => 过期（代码已提交未更新文档）
         inv_data = self._inv(is_git=True, source_commit="aaaaaa")
         rep = dev_docs.analyze(inv_data, out)

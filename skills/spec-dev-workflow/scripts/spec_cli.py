@@ -31,6 +31,7 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import NoReturn
 
 # ============================================================
 # 常量
@@ -669,8 +670,6 @@ def cmd_phase_complete(args) -> None:
         hint = "全部完成" if cur is None else "当前应完成阶段: %s" % cur
         err("越级收口被拒：期望 [%s]，收到 [%s]（%s）" % (cur, phase, hint))
 
-    stage = stage_by_id(pipeline, phase)
-
     # ---- 跳过分支 ----
     if args.skip is not None:
         reason = args.skip.strip()
@@ -841,7 +840,8 @@ def main() -> None:
     p.add_argument("--handoff", default=None, help="handoff JSON（四字段）")
     p.add_argument("--skip", default=None, metavar="原因", help="跳过当前阶段并注明原因")
     p.add_argument("--decision", default=None, help="可选：追加一条决策记录")
-    p.add_argument("--review-result", default=None, help="review 门控阶段必填：spec-health-check 评审 JSON（score/issues）")
+    p.add_argument("--review-result", default=None,
+                   help="review 门控阶段必填：spec-health-check 评审 JSON（score/issues）")
     p.set_defaults(func=cmd_phase_complete)
 
     p = sub.add_parser("gate", help="门禁检查（可独立预检）")

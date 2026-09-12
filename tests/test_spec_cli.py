@@ -406,7 +406,9 @@ class ExtendCase(unittest.TestCase):
                  "gate": {"checks": [
                      {"type": "builtin", "rules": ["artifacts_exist", "artifacts_nonempty",
                                                    "no_placeholder", "no_fill_marker"]},
-                     {"type": "command", "cmd": "python3 -c \"import os,sys; sys.exit(0 if os.path.isfile('requirements.txt') else 1)\""}]}}
+                     {"type": "command",
+                      "cmd": "python3 -c \"import os,sys; "
+                             "sys.exit(0 if os.path.isfile('requirements.txt') else 1)\""}]}}
             ]
         }
         (Path(self.root) / "pipeline.json").write_text(

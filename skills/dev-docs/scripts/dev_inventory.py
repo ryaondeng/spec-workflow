@@ -456,7 +456,8 @@ _JAVA_SIG = re.compile(
 _JAVA_ANN = re.compile(r"(?m)^\s*@(GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping|RequestMapping|Mapping)"
                        r"\s*(\(\s*\"([^\"]+)\"\s*(?:,\s*method\s*=\s*(RequestMethod\.)?(\w+))?\))?")
 _TS_EXPORT = re.compile(r"(?m)^\s*export\s+(?:default\s+)?(?:async\s+)?function\s+(\w+)\s*\(([^)]*)\)")
-_TS_CONSTFN = re.compile(r"(?m)^\s*(?:export\s+)?(?:const|let)\s+(\w+)\s*=\s*(?:async\s+)?\(([^)]*)\)\s*(?:=>|:)\s*[^=]")
+_TS_CONSTFN = re.compile(
+    r"(?m)^\s*(?:export\s+)?(?:const|let)\s+(\w+)\s*=\s*(?:async\s+)?\(([^)]*)\)\s*(?:=>|:)\s*[^=]")
 _TS_CLASS_M = re.compile(r"(?m)^\s*(?:(?:public|private|protected|async|static|get|set)\s+)*(\w+)\s*\(([^)]*)\)\s*\{")
 _TS_METHOD = re.compile(r"(?m)^\s*(?:(?:public|private|protected)\s+)?(\w+)\s*\(([^)]*)\)\s*:\s*[\w<>\[\]|, ?]+")
 _SH_FUNC = re.compile(r"(?m)^\s*([a-zA-Z_][\w]*)\s*\(\s*\)\s*\{|^([a-zA-Z_][\w]*)\s*\(\)")
@@ -499,7 +500,8 @@ def collect_tests(root, extra_exclude):
         is_test = False
         if ext == ".py":
             base = os.path.basename(fp)
-            is_test = base.startswith("test_") or base.endswith("_test.py") or "/test_" in rel or rel.startswith("tests/")
+            is_test = (base.startswith("test_") or base.endswith("_test.py")
+                       or "/test_" in rel or rel.startswith("tests/"))
             if is_test:
                 cases = []
                 try:
@@ -527,7 +529,6 @@ def build_inventory(root, extra_exclude=None, project_type="auto"):
         # catkin 构建产物目录并入排除（对所有扫描生效：代码/全文件/模块/依赖）
         extra = list(extra) + [p for p in CATKIN_EXCLUDE if p not in extra]
     modules = build_modules(root, extra)
-    mod_by_id = {m["id"]: m for m in modules}
     langs = detect_langs(root, extra)
 
     symbols = []
