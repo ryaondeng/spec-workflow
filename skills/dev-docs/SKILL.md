@@ -144,7 +144,7 @@ dev_docs.py report   --dir <目标项目>                  # 重建 index.md + �
 - `references/api-doc-style.md` — 函数级/端点级条目模板、示例质量要求
 - `references/lang-mapping.md` — Java/Python/TS 指纹与发现约定
 - `references/anti-patterns.md` — 红线 + 分层抽审 checklist
-- `references/roadmap-and-limits.md` — 已知限制与 v2/后续方向（遇到“编号难读/结构重复/分层/对外接口文档”等反馈时先读，不现场重构）
+- `references/known-limits.md` — 当前机制、已知限制与应答口径（遇到“编号难读/结构重复/分层/对外接口文档/语言不支持”等反馈时先读，不现场重构；开发规划在 spec-workflow docs/pool，不在本 skill）
 
 ## 红线（违反不得宣告完成，详见 anti-patterns.md）
 
