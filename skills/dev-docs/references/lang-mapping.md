@@ -25,12 +25,12 @@
 | 入口 | `main.py`/Spring `Application` | `cmd/`、`__main__.py` | `ros::init` + `ros::spin`（节点 main） | `__init__.py`、export |
 | 契约来源 | 路由注册 + handler 签名 | argparse/cobra/clap 子命令 | 话题 pub/sub + .msg/.srv 接口定义 | `__all__`/export |
 | 数据模型 | ORM Model / dataclass | 配置文件 | `.msg` 字段 / struct（database.h 式协议结构体） | 类型声明 |
-| 测试约定 | `tests/`、`test_*.py` | 同上 | rostest（暂无自动索引） | 同上 |
+| 测试约定 | **跨语言统一**（v1.5）：位于 `tests/`/`test/`/`__tests__/`/`spec/` 目录，或文件名形如 `test.cpp`/`test_*.py`/`*_test.cpp`/`tests.py` → 只入 `tests` 索引，**不生成符号卡片**（`dev_langs.base.is_test_file`） | 同上 | rostest 同理按文件名判定 | 同上 |
 
 ## 3. 跨语言执行要点
 
 1. 起手先跑 `dev_docs.py inventory` 看 `langs`：v1.5 全部为 reliable（tree-sitter 支持矩阵内）。
 2. 未注册语言（unsupported）的目录仍受"文件归属 100%"门禁约束——语义地图显式归属或声明 ignored。
 3. 一个仓库多语言：按语言分节写 architecture；模块文档标注该模块语言（`reference` 页头部 `lang` 字段）。
-4. 依赖分析：python import 自动；C++ `#include`/CMake/package.xml 解析在路线图（A3 后续），现阶段由 AI 在 architecture/模块四问里补（evidence: 事实——文件路径）。
+4. 依赖分析（v1.5 已实现）：python import 与 C++ `#include` 自动映射为 `modules[].deps`（包内互引）；CMake `find_package` 与 `package.xml` 的 depend 系标签 → `modules[].external_deps`；ROS 调用形态（`advertise`/`subscribe`/`advertiseService`/`serviceClient`/`ros::init` 与 rospy 对应形态）→ `inventory.interfaces` 的 `TOP-/SVC-/NDE-` 条目。剩余细节由 AI 在 architecture/模块四问里补（evidence: 事实——文件路径）。
 5. ROS 形态：`advertise/subscribe/ServiceServer` 的自动化识别在路线图；现阶段由 AI 读源码补（evidence 纪律不变）。
