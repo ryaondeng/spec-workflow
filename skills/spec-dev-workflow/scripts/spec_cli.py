@@ -803,7 +803,18 @@ def cmd_restore(args) -> None:
 # 主入口
 # ============================================================
 
+def _force_utf8_output() -> None:
+    """Windows 控制台/管道默认 GBK：输出 emoji（✅🔄❌）会触发 UnicodeEncodeError。
+    统一把 stdout/stderr 切到 UTF-8（Python 3.7+）；异常时静默降级，不影响主流程。"""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
 def main() -> None:
+    _force_utf8_output()
     parser = argparse.ArgumentParser(prog="spec_cli.py", description="spec-workflow 编排引擎")
     sub = parser.add_subparsers(dest="command", required=True)
 

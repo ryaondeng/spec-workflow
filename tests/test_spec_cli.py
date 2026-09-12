@@ -76,7 +76,8 @@ FILL_08_ALL = """- [x] T01 实现 CSV 解析模块
 def run(*args, cwd=None, env=None):
     """执行 CLI，返回 (rc, stdout+stderr 合并输出)；成功路径的机器输出无 stderr 干扰"""
     proc = subprocess.run([sys.executable, str(CLI)] + list(args),
-                          capture_output=True, text=True, cwd=cwd, env=env)
+                          capture_output=True, encoding="utf-8", errors="replace",
+                          cwd=cwd, env=env)
     return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
 
 
@@ -105,7 +106,7 @@ class EngineCase(unittest.TestCase):
         self._td.cleanup()
 
     def read_state(self):
-        return json.loads((self.sess / "state.json").read_text())
+        return json.loads((self.sess / "state.json").read_text(encoding="utf-8"))
 
     def fill(self, name, text):
         (self.fd / name).write_text(text, encoding="utf-8")
@@ -122,7 +123,7 @@ class EngineCase(unittest.TestCase):
         self.assertTrue((self.fd / "01-requirements.md").is_file())
         self.assertTrue((self.fd / "00-index.md").is_file())
         self.assertIn("SPEC_TEMPLATE_PENDING",
-                      (self.fd / "01-requirements.md").read_text())
+                      (self.fd / "01-requirements.md").read_text(encoding="utf-8"))
 
     def test_init_timestamp_dirname(self):
         """目录名带时间戳前缀（yyyymmddhhmm-slug），便于按时间排序"""
@@ -174,7 +175,7 @@ class EngineCase(unittest.TestCase):
         # 合法收口
         rc, out = self.complete("implementation", "T01 完成")
         self.assertEqual(rc, 0, out)
-        idx = (self.fd / "00-index.md").read_text()
+        idx = (self.fd / "00-index.md").read_text(encoding="utf-8")
         self.assertIn("✅ 已完成", idx)
         # handoff 落在会话目录（.specworkflow/sessions/），不在文档目录
         self.assertFalse((self.fd / "handoff").exists())
@@ -306,7 +307,7 @@ class ReviewGateCase(unittest.TestCase):
         self.assertEqual(self.read_state()["current_phase"], "review")
 
     def read_state(self):
-        return json.loads((self.sess / "state.json").read_text())
+        return json.loads((self.sess / "state.json").read_text(encoding="utf-8"))
 
     def _complete_review(self, rv=None):
         args = ["phase-complete", self.root, self.f, "review", "--handoff",
@@ -397,10 +398,11 @@ class ExtendCase(unittest.TestCase):
                  "gate": {"checks": [
                      {"type": "builtin", "rules": ["artifacts_exist", "artifacts_nonempty",
                                                    "no_placeholder", "no_fill_marker"]},
-                     {"type": "command", "cmd": "test -f requirements.txt"}]}}
+                     {"type": "command", "cmd": "python3 -c \"import os,sys; sys.exit(0 if os.path.isfile('requirements.txt') else 1)\""}]}}
             ]
         }
-        (Path(self.root) / "pipeline.json").write_text(json.dumps(cfg, ensure_ascii=False))
+        (Path(self.root) / "pipeline.json").write_text(
+            json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
         rc, out = run("init", self.root, self.f)
         self.assertEqual(rc, 0, out)
         docs = [p for p in Path(self.root).iterdir() if p.is_dir()][0]
@@ -411,7 +413,7 @@ class ExtendCase(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("command", out)
         # 满足 → 放行收口
-        (Path(self.root) / "requirements.txt").write_text("pkg==1.0")
+        (Path(self.root) / "requirements.txt").write_text("pkg==1.0", encoding="utf-8")
         rc, out = run("phase-complete", self.root, self.f, "requirements",
                       "--handoff", ho())
         self.assertEqual(rc, 0, out)

@@ -12,7 +12,18 @@ import sys
 from pathlib import Path
 
 
+def _force_utf8_output():
+    """Windows 控制台/管道默认 GBK：输出 emoji（❌）会触发 UnicodeEncodeError。
+    统一把 stdout/stderr 切到 UTF-8（Python 3.7+）；异常时静默降级，不影响主流程。"""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
 def main(argv=None):
+    _force_utf8_output()
     ap = argparse.ArgumentParser(prog="uninstall.py", description="spec-workflow 卸载器（跨平台）")
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--global", dest="mode", action="store_const", const="global",

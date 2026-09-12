@@ -79,7 +79,18 @@ def index_status(path):
     return done, doing, todo, skipped
 
 
+def _force_utf8_output():
+    """Windows 控制台/管道默认 GBK：输出 emoji（🏥✅❌⚠️）会触发 UnicodeEncodeError。
+    统一把 stdout/stderr 切到 UTF-8（Python 3.7+）；异常时静默降级，不影响主流程。"""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
 def main(argv=None):
+    _force_utf8_output()
     argv = list(sys.argv[1:] if argv is None else argv)
     if len(argv) < 2:
         print("用法: python health-check.py <spec根目录> <名称> [--version <版本>]")

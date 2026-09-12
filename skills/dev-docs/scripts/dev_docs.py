@@ -635,7 +635,18 @@ def cmd_report(inv_data, root, out):
 
 # ---------------- CLI ----------------
 
+def _force_utf8_output():
+    """Windows 控制台/管道默认 GBK：输出非 GBK 字符（✓ 等）会触发 UnicodeEncodeError。
+    统一把 stdout/stderr 切到 UTF-8（Python 3.7+）；异常时静默降级，不影响主流程。"""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
 def main(argv=None):
+    _force_utf8_output()
     import argparse
     ap = argparse.ArgumentParser(prog="dev_docs.py", description="dev-docs 从代码库逆向生成文档")
     ap.add_argument("command", choices=["inventory", "extract", "promote", "check", "report"],

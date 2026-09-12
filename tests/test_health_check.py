@@ -18,7 +18,7 @@ FILES = ["00-index.md", "01-requirements.md", "02-design.md", "03-implementation
 
 def run(spec_root, name):
     return subprocess.run([sys.executable, str(HC), spec_root, name],
-                          capture_output=True, text=True)
+                          capture_output=True, encoding="utf-8", errors="replace")
 
 
 class HealthCheckPyCase(unittest.TestCase):
@@ -70,7 +70,7 @@ class HealthCheckPyCase(unittest.TestCase):
 
     def test_unknown_arg_rejected(self):
         r = subprocess.run([sys.executable, str(HC), str(self.root), "demo", "--bogus"],
-                           capture_output=True, text=True)
+                           capture_output=True, encoding="utf-8", errors="replace")
         self.assertEqual(r.returncode, 1)
         self.assertIn("未知参数", r.stdout)
 

@@ -16,7 +16,8 @@ EXPECTED = {"dev-docs", "spec-dev-workflow", "spec-health-check"}
 
 def run(script, *args, cwd=None):
     return subprocess.run([sys.executable, str(script)] + list(args),
-                          capture_output=True, text=True, cwd=cwd or str(REPO))
+                          capture_output=True, encoding="utf-8", errors="replace",
+                          cwd=cwd or str(REPO))
 
 
 class InstallerCase(unittest.TestCase):
