@@ -388,5 +388,234 @@ class P3Case(TmpCase):
         self.assertIn("src/a.py", d["changed_files"])
 
 
+class PlanAndBrief(TmpCase):
+    """v1.4：页面树（plan）/ 页级工单（brief）/ 结构门禁。"""
+
+    APP = {
+        "README.md": "# demo\n",
+        "src/__init__.py": "",
+        "src/app.py": ("class UserService:\n"
+                       "    def create(self, name):\n"
+                       "        return name\n"
+                       "\n"
+                       "def helper(x):\n"
+                       "    return x * 2\n"),
+    }
+
+    def _init(self):
+        write_tree(self.tmp, self.APP)
+        root = self.tmp
+        out = dev_docs.outdir(root, "dev-docs")
+        data = dev_docs.cmd_inventory(root, out, [], quiet=True)
+        return root, out, data
+
+    def _ref_page(self, out):
+        plan = dev_docs.load_plan(out)
+        return [p for p in plan["pages"] if p["type"] == "reference"][0]
+
+    def test_plan_pages_and_validate(self):
+        root, out, data = self._init()
+        plan = dev_docs.build_plan(data, out)
+        slugs = [p["slug"] for p in plan["pages"]]
+        self.assertIn("index", slugs)
+        self.assertIn("architecture", slugs)
+        self.assertIn("usage", slugs)          # v1.4 新增页
+        self.assertTrue(any(s.startswith("reference/") for s in slugs))
+        self.assertEqual(dev_docs.validate_plan(plan), [])
+        for p in plan["pages"]:
+            self.assertTrue(p["sections"])
+        # data 页默认不生成
+        self.assertFalse(any(p["type"] == "data" for p in plan["pages"]))
+
+    def test_plan_keeps_manual_edits(self):
+        root, out, data = self._init()
+        dev_docs.save_plan(out, dev_docs.build_plan(data, out))
+        plan = dev_docs.load_plan(out)
+        dev_docs.page_by_slug(plan, "architecture")["title"] = "我的架构页"
+        dev_docs.page_by_slug(plan, "architecture")["purpose"] = "自定义用途"
+        dev_docs.save_plan(out, plan)
+        merged = dev_docs.build_plan(data, out, existing=dev_docs.load_plan(out))
+        arch = dev_docs.page_by_slug(merged, "architecture")
+        self.assertEqual(arch["title"], "我的架构页")
+        self.assertEqual(arch["purpose"], "自定义用途")
+
+    def test_plan_validate_bad_parent(self):
+        errs = dev_docs.validate_plan({"pages": [{"slug": "a", "type": "index", "parent": "nope"}]})
+        self.assertTrue(any("parent" in e for e in errs))
+
+    def test_extract_plan_driven_writes_all_pages(self):
+        root, out, data = self._init()
+        dev_docs.cmd_plan(root, out, write=True)
+        dev_docs.extract_layer(data, root, out, "all")
+        for p in dev_docs.load_plan(out)["pages"]:
+            self.assertTrue(os.path.exists(os.path.join(out, p["slug"] + ".md.draft")), p["slug"])
+
+    def test_extract_keeps_filled_semantics(self):
+        root, out, data = self._init()
+        dev_docs.cmd_plan(root, out, write=True)
+        dev_docs.extract_layer(data, root, out, "all")
+        page = self._ref_page(out)
+        draft = os.path.join(out, page["slug"] + ".md.draft")
+        text = open(draft, encoding="utf-8").read()
+        # 模拟 AI 填写（在 AI-GEN 区外的叙事节）
+        text = text.replace("## 概览（四问）", "## 概览（四问）\n\n- **做什么**：我填的内容（evidence: 事实）", 1)
+        with open(draft, "w", encoding="utf-8", newline="\n") as f:
+            f.write(text)
+        dev_docs.cmd_promote(out, draft, data)
+        dev_docs.extract_layer(data, root, out, "all")     # 再生成：机器区刷新、区外保留
+        again = open(os.path.join(out, page["slug"] + ".md.draft"), encoding="utf-8").read()
+        self.assertIn("我填的内容（evidence: 事实）", again)
+
+    def test_promote_status_generated_when_worker_left(self):
+        root, out, data = self._init()
+        dev_docs.cmd_plan(root, out, write=True)
+        dev_docs.extract_layer(data, root, out, "usage")
+        dev_docs.cmd_promote(out, os.path.join(out, "usage.md.draft"), data)
+        self.assertEqual(dev_docs.page_by_slug(dev_docs.load_plan(out), "usage")["status"],
+                         "generated")     # 仍有 AI-FILL → 未填充
+
+    def test_section_missing_detected(self):
+        root, out, data = self._init()
+        dev_docs.cmd_plan(root, out, write=True)
+        page = self._ref_page(out)
+        f = os.path.join(out, page["slug"] + ".md")
+        os.makedirs(os.path.dirname(f), exist_ok=True)
+        with open(f, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write("---\ndoc_id: x\ntype: reference\n---\n# 只有标题\n")
+        rep = dev_docs.analyze(data, out)
+        self.assertTrue(any("缺节" in e for e in rep["section_missing"]))
+
+    def test_ai_fill_hits(self):
+        root, out, data = self._init()
+        os.makedirs(out, exist_ok=True)
+        with open(os.path.join(out, "architecture.md"), "w", encoding="utf-8", newline="\n") as fh:
+            fh.write("# a\n<!-- AI-FILL:X 未填 -->\n")
+        self.assertTrue(any("architecture.md" in h for h in dev_docs.ai_fill_hits(out)))
+
+    def test_ref_re_ignores_version_and_ip(self):
+        self.assertIsNone(dev_docs.REF_RE.search("qwen3.5:4b 与 http://127.0.0.1:11434"))
+        m = dev_docs.REF_RE.search("`pico/cli.py:12`")
+        self.assertEqual(m.group(1), "pico/cli.py")
+        self.assertEqual(m.group(2), "12")
+
+    def test_ref_file_missing(self):
+        root, out, data = self._init()
+        os.makedirs(out, exist_ok=True)
+        with open(os.path.join(out, "usage.md"), "w", encoding="utf-8", newline="\n") as fh:
+            fh.write("# u\n见 `ghost/nowhere.py:9` 与 `README.md:1`。\n")
+        errs = dev_docs.page_ref_errors(data, out)
+        self.assertEqual(len(errs), 1)
+        self.assertIn("ghost/nowhere.py", errs[0])
+
+    def test_brief_data(self):
+        root, out, data = self._init()
+        dev_docs.cmd_plan(root, out, write=True)
+        d = dev_docs.brief_data(data, out, self._ref_page(out))
+        self.assertTrue(d["purpose"])
+        self.assertTrue(d["sections"])
+        self.assertTrue(d["source_files"])
+        self.assertTrue(d["symbols"])
+        self.assertTrue(d["requirements"])
+        self.assertTrue(d["checklist"])
+
+    def test_index_coverage_rendered_on_extract(self):
+        root, out, data = self._init()
+        dev_docs.cmd_plan(root, out, write=True)
+        dev_docs.extract_layer(data, root, out, "index")
+        t = open(os.path.join(out, "index.md.draft"), encoding="utf-8").read()
+        self.assertIn("文件归属", t)
+        self.assertNotIn("{file_covered}", t)
+        self.assertNotIn("{doc_tree}", t)
+
+
+class FixRefsAndPurity(TmpCase):
+    """v1.4.1：行号合理性校验/自动修正、重名标题限定、ignored 过滤、Sources 不截断。"""
+
+    APP = {
+        "README.md": "# demo\n",
+        "src/__init__.py": "",
+        "src/app.py": ("class A:\n"
+                       "    def run(self):\n"
+                       "        return 1\n"
+                       "\n"
+                       "\n"
+                       "def helper(x):\n"
+                       "    return x\n"),
+    }
+
+    def _init(self):
+        write_tree(self.tmp, self.APP)
+        out = dev_docs.outdir(self.tmp, "dev-docs")
+        data = dev_docs.cmd_inventory(self.tmp, out, [], quiet=True)
+        return out, data
+
+    def _write_doc(self, out, rel, body):
+        p = os.path.join(out, rel)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w", encoding="utf-8", newline="\n") as f:
+            f.write(body)
+
+    def test_ref_line_blank_is_autofixable(self):
+        out, data = self._init()
+        self._write_doc(out, "usage.md", "# u\n见 `src/app.py:5`（空行）。\n")
+        issues = dev_docs.ref_line_issues(data, out)
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0]["kind"], "blank")
+        self.assertTrue(issues[0]["auto"])
+        self.assertEqual(issues[0]["suggest"], 6)
+        dev_docs.ref_line_issues(data, out, fix=True)          # --write 等价
+        t = open(os.path.join(out, "usage.md"), encoding="utf-8").read()
+        self.assertIn("src/app.py:6", t)
+        self.assertNotIn("src/app.py:5", t)
+
+    def test_ref_line_import_only_warns(self):
+        write_tree(self.tmp, {"src/withimp.py": "import os\n\n\ndef f():\n    return os\n"})
+        out = dev_docs.outdir(self.tmp, "dev-docs")
+        data = dev_docs.cmd_inventory(self.tmp, out, [], quiet=True)
+        self._write_doc(out, "usage.md", "# u\n见 `src/withimp.py:1`。\n")
+        issues = dev_docs.ref_line_issues(data, out)
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0]["kind"], "import")
+        self.assertFalse(issues[0]["auto"])                   # import 类不自动改
+
+    def test_ref_line_import_ok_when_context_says_dependency(self):
+        write_tree(self.tmp, {"src/withimp.py": "import os\n\n\ndef f():\n    return os\n"})
+        out = dev_docs.outdir(self.tmp, "dev-docs")
+        data = dev_docs.cmd_inventory(self.tmp, out, [], quiet=True)
+        self._write_doc(out, "usage.md", "# u\n依赖：`src/withimp.py:1`（导入 os）。\n")
+        self.assertEqual(dev_docs.ref_line_issues(data, out), [])
+
+    def test_dup_symbol_titles_qualified(self):
+        write_tree(self.tmp, {"scripts/a.py": "def main():\n    pass\n",
+                              "scripts/b.py": "def main():\n    pass\n"})
+        data = inv.build_inventory(self.tmp)
+        counts = {}
+        for s in data["symbols"]:
+            if s.get("qname") == "main":
+                counts[s["module"]] = counts.get(s["module"], 0) + 1
+        mid = next(k for k, v in counts.items() if v >= 2)
+        txt = dev_docs.ref_detail_sections(data, mid)
+        self.assertIn("main（scripts/a.py）", txt)
+        self.assertIn("main（scripts/b.py）", txt)
+
+    def test_ignored_files_excluded_from_source_files(self):
+        out, data = self._init()
+        dev_docs.cmd_plan(self.tmp, out, write=True)
+        dev_docs.json_save(os.path.join(out, ".semantic-map.json"), {
+            "version": 1,
+            "modules": [{"name": "root", "path": ".", "files": [],
+                         "ignored_files": [{"path": "README.md", "reason": "test"}]}]})
+        page = dev_docs.page_by_slug(dev_docs.load_plan(out), "index")
+        vals = dev_docs.page_values(data, out, page)
+        self.assertNotIn("README.md", vals["source_files"])
+
+    def test_sources_not_truncated(self):
+        out, data = self._init()
+        refs = " ".join("`src/app.py:%d`" % i for i in range(1, 26))
+        rows = dev_docs.collect_page_refs("见 " + refs, data)
+        self.assertTrue(rows)
+        self.assertNotIn("…", rows[0])
+
+
 if __name__ == "__main__":
     unittest.main()

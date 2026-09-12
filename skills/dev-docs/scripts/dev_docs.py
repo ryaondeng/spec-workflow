@@ -22,6 +22,8 @@ BEG = "<!-- AI-GEN:BEGIN -->"
 END = "<!-- AI-GEN:END -->"
 ANCHOR = re.compile(r"<!--\s*@([A-Z]+-\d+)\s*-->")   # v1.3：kind 前缀放开（FUN/API/SYM/EPT/ITF…）
 MARK = "<!-- TODO AI 依源码填写"   # 语义未填占位（填充度报告用）
+# v1.4.1：「相关源文件」行虽位于 AI-GEN 区外，但由机器维护（随扫描/语义地图刷新）
+_SRC_LINE_RE = re.compile(r"^\*\*相关源文件\*\*：.*$", re.M)
 SYM_TODO = "<!-- TODO AI 依源码填写（evidence: 推断/假设需注明） -->"
 EP_TODO = "<!-- TODO AI 依源码填写；示例取 tested_by 对应测试 -->"
 
@@ -166,12 +168,15 @@ def meta_for(inv_data, doc_id, typ, module_id=None, status="draft"):
     }
 
 
-def _sym_card(s):
-    """v1.2 符号卡片：语义名标题 + 隐藏 ID 锚点。"""
+def _sym_card(s, qualified=False):
+    """v1.2 符号卡片：语义名标题 + 隐藏 ID 锚点。
+    v1.4.1：同模块内存在同名符号（如三个脚本都有 build_arg_parser）时，
+    qualified=True 给标题加文件限定，避免重名标题造成锚点歧义。"""
+    title = s["qname"] if not qualified else "%s（%s）" % (s["qname"], s["file"])
     return ("### %s\n\n"
             "- 签名：`%s`（file %s:%s, evidence: 事实）<!-- @%s -->\n"
             "- 用途 / 参数 / 返回 / 错误：%s\n"
-            % (s["qname"], s.get("signature") or "?", s["file"],
+            % (title, s.get("signature") or "?", s["file"],
                s.get("line", 0), s["id"], SYM_TODO))
 
 
@@ -208,10 +213,18 @@ def ref_detail_sections(inv_data, module_id):
     syms = [s for s in inv_data["symbols"] if s["module"] == module_id]
     eps = [e for e in inv_data["endpoints"] if e["module"] == module_id]
     sections = []
+    # v1.4.1：同模块内同名符号（多文件同名函数）→ 标题加文件限定，避免锚点歧义
+    counts = {}
+    for s in syms:
+        counts[s.get("qname")] = counts.get(s.get("qname"), 0) + 1
+
+    def card(s):
+        return _sym_card(s, counts.get(s.get("qname"), 0) > 1)
+
     funcs = [s for s in syms if s.get("kind") == "function"]
     if funcs:
         sections.append("## 模块级函数\n\n" +
-                        "\n".join(_sym_card(s) for s in funcs))
+                        "\n".join(card(s) for s in funcs))
     by_cls = {}
     order = []
     for s in syms:
@@ -224,15 +237,15 @@ def ref_detail_sections(inv_data, module_id):
         by_cls[cls].append(s)
     for cls in order:
         sections.append("## 类：%s\n\n" % cls +
-                        "\n".join(_sym_card(s) for s in by_cls[cls]))
+                        "\n".join(card(s) for s in by_cls[cls]))
     others = [s for s in syms if s.get("kind") not in ("function", "method")]
     if others:
         sections.append("## 其他符号\n\n" +
-                        "\n".join(_sym_card(s) for s in others))
+                        "\n".join(card(s) for s in others))
     if eps:
         sections.append("## HTTP 端点\n\n" +
                         "\n".join(_ep_card(e) for e in eps))
-    return "\n\n".join(sections) if sections else "<!-- 本模块无公开符号 -->"
+    return "\n\n".join(sections) if sections else "（本模块无公开符号；或符号尚未被盘点识别）"
 
 
 def reference_tpl_values(inv_data, m):
@@ -245,17 +258,27 @@ def reference_tpl_values(inv_data, m):
         "inventory_hash": inv_data.get("_inventory_hash") or "",
         "status": "draft",
         "deps": ",".join(m.get("deps") or []) or "（无内部依赖或待确认）",
-        "index_rows": "\n".join(ref_index_rows(inv_data, m["id"])) or "| — | — | — | — |",
+        "index_rows": "\n".join(ref_index_rows(inv_data, m["id"])) or "| — | （本模块无公开符号） | — | — |",
         "detail_rows": ref_detail_sections(inv_data, m["id"]),
     }
 
 
-def arch_values(inv_data):
+def arch_module_rows(inv_data, out=None):
+    """架构页模块清单表（机器行：编号/名称/路径/职责(语义地图优先)/依赖）。"""
     rows = []
     for m in inv_data.get("modules", []):
+        resp = "（待补：职责）"
+        if out:
+            sm = smap_for_module(out, m)
+            if sm and sm.get("responsibility"):
+                resp = sm["responsibility"]
         rows.append("| %s | %s | %s | %s | %s |"
-                    % (m["id"], m["name"], m["path"], "（AI 补：职责）",
+                    % (m["id"], m["name"], m["path"], resp,
                        ",".join(m.get("deps") or []) or "—"))
+    return "\n".join(rows) if rows else "| — | — | — | — | — |"
+
+
+def arch_values(inv_data):
     entries = []
     for lang in inv_data.get("langs", {}):
         entries.append("- %s：<!-- TODO AI：入口文件/启动命令/路由注册 -->" % lang)
@@ -266,7 +289,7 @@ def arch_values(inv_data):
         "inventory_hash": inv_data.get("_inventory_hash") or "",
         "status": "draft",
         "langs": ",".join(inv_data.get("langs", {})) or "?",
-        "module_rows": "\n".join(rows),
+        "module_rows": arch_module_rows(inv_data),
         "entry_rows": "\n".join(entries),
         "summary": "<!-- TODO AI：一句话定位 -->",
     }
@@ -326,6 +349,368 @@ def load_inventory(out):
     return json_load(os.path.join(out, "inventory.json"))
 
 
+# ---------------- 页面树规划（.devdocs-plan.json，DeepWiki 对齐） ----------------
+
+PLAN_FILE = ".devdocs-plan.json"
+PAGE_TYPES = ("index", "architecture", "usage", "reference", "data")
+
+# 各页面类型的固定章节（plan.sections 默认值；check 按此校验结构完整性）
+PAGE_SECTIONS = {
+    "index": ["项目定位", "能力矩阵", "文档树", "阅读路径", "覆盖率摘要"],
+    "architecture": ["系统上下文", "构建块视图", "运行时场景", "横切概念与决策", "术语表"],
+    "usage": ["安装与启动", "配置", "常见任务", "扩展点", "故障排查"],
+    "reference": ["概览", "组件与协作", "使用指南", "对外接口面", "符号索引", "详细契约"],
+    "data": ["实体与字段", "关系", "存储与生命周期"],
+}
+
+PAGE_PURPOSE = {
+    "index": "项目是什么、能力边界在哪、先去读哪一页",
+    "architecture": "系统怎么组织、一次典型请求怎么跑",
+    "usage": "怎么安装配置、常见任务怎么做、如何扩展",
+}
+
+PAGE_TPL = {"index": "index.md", "architecture": "architecture.md", "usage": "usage.md",
+            "reference": "reference.md", "data": "data.md"}
+
+SOURCES_MARK = "<!-- SOURCES:AUTO -->"
+# file:line 引用：扩展名必须以字母开头（排除 `qwen3.5:4`、`127.0.0.1:11434` 这类版本号/IP 误匹配）
+REF_RE = re.compile(r"([A-Za-z0-9_][A-Za-z0-9_./\-]*\.[A-Za-z][A-Za-z0-9]{0,9}):(\d+)")
+
+
+def load_plan(out):
+    plan = json_load(os.path.join(out, PLAN_FILE))
+    return plan if isinstance(plan, dict) and plan.get("pages") else None
+
+
+def save_plan(out, plan):
+    json_save(os.path.join(out, PLAN_FILE), plan)
+
+
+def page_by_slug(plan, slug):
+    for p in (plan or {}).get("pages") or []:
+        if p.get("slug") == slug:
+            return p
+    return None
+
+
+def doc_id_for(page):
+    t = page.get("type")
+    if t == "index":
+        return "INDEX"
+    if t == "architecture":
+        return "ARCH-001"
+    if t == "usage":
+        return "USAGE-001"
+    if t == "reference":
+        return page.get("module_id") or "MOD-000"
+    if t == "data":
+        return "DATA-%s" % (page.get("module_id") or "MOD-000")
+    return "PAGE-001"
+
+
+def ignored_paths(out):
+    """语义地图里显式声明忽略的文件（如 .env / 截图 / 历史产物）——
+    v1.4.1：不列入「相关源文件」（此前 .env 会被当成相关源文件推荐给 AI/人读）。"""
+    smap = load_semantic_map(out) or {}
+    paths = set()
+    for m in smap.get("modules") or []:
+        for it in m.get("ignored_files") or []:
+            p = it.get("path") if isinstance(it, dict) else it
+            if p:
+                paths.add(str(p).replace("\\", "/"))
+    return paths
+
+
+def root_files(inv_data, out=None):
+    """根级（非目录内）文件——index/usage 页的源文件提示（已排除显式 ignored）。"""
+    files = [f["path"] for f in inv_data.get("files", [])]
+    ign = ignored_paths(out) if out else set()
+    return sorted(p for p in files if "/" not in p and p not in ign)
+
+
+def module_files(inv_data, m, smap=None):
+    """模块所属文件：语义地图优先，其次按模块 path 前缀在文件全集内匹配。"""
+    path = (m.get("path") or "").strip().strip("/")
+    if smap:
+        for sm in smap.get("modules") or []:
+            if (sm.get("path") or "").strip().strip("/") == path:
+                fs = [str(x).replace("\\", "/") for x in (sm.get("files") or [])]
+                if fs:
+                    return sorted(fs)
+    files = [f["path"] for f in inv_data.get("files", [])]
+    if path in ("", "."):
+        return sorted(p for p in files if "/" not in p)
+    pref = path + "/"
+    return sorted(p for p in files if p.startswith(pref))
+
+
+def module_by_id(inv_data, mid):
+    for m in inv_data.get("modules", []):
+        if m["id"] == mid:
+            return m
+    return None
+
+
+def smap_for_module(out, m):
+    """语义地图中对应模块条目（purpose/responsibility 来源）。"""
+    smap = load_semantic_map(out)
+    if not smap:
+        return None
+    path = (m.get("path") or "").strip().strip("/")
+    for sm in smap.get("modules") or []:
+        if (sm.get("path") or "").strip().strip("/") == path:
+            return sm
+    return None
+
+
+def build_plan(inv_data, out, existing=None):
+    """由 inventory + 语义地图生成页面树；existing 存在时保留人工编辑。"""
+    proj = os.path.basename(inv_data.get("root") or "") or "project"
+    smap = load_semantic_map(out)
+    pages = [
+        {"slug": "index", "type": "index", "title": "%s — 文档总览" % proj,
+         "parent": None, "purpose": PAGE_PURPOSE["index"],
+         "sections": list(PAGE_SECTIONS["index"]),
+         "source_files": root_files(inv_data, out), "status": "planned"},
+        {"slug": "architecture", "type": "architecture", "title": "架构总览",
+         "parent": "index", "purpose": PAGE_PURPOSE["architecture"],
+         "sections": list(PAGE_SECTIONS["architecture"]),
+         "source_files": root_files(inv_data, out), "status": "planned"},
+        {"slug": "usage", "type": "usage", "title": "上手与扩展",
+         "parent": "index", "purpose": PAGE_PURPOSE["usage"],
+         "sections": list(PAGE_SECTIONS["usage"]),
+         "source_files": root_files(inv_data, out), "status": "planned"},
+    ]
+    for m in inv_data.get("modules", []):
+        sm = smap_for_module(out, m)
+        pages.append({
+            "slug": "reference/%s" % module_slug(m), "type": "reference",
+            "module_id": m["id"], "title": m.get("name") or m["id"],
+            "parent": "index",
+            "purpose": (sm or {}).get("responsibility") or "（待补：本模块职责一句话）",
+            "sections": list(PAGE_SECTIONS["reference"]),
+            "source_files": module_files(inv_data, m, smap),
+            "status": "planned",
+        })
+    if existing:
+        old = {}
+        for p in existing.get("pages") or []:
+            if p.get("slug"):
+                old[p["slug"]] = p
+        merged, known = [], set()
+        for p in pages:
+            o = old.get(p["slug"])
+            if o:
+                # source_files 是机器字段（随扫描/语义地图刷新），不纳入人工编辑保护
+                for k in ("title", "purpose", "parent", "sections", "status"):
+                    v = o.get(k)
+                    if v not in (None, "", []):
+                        p[k] = v
+            merged.append(p)
+            known.add(p["slug"])
+        for slug, o in old.items():
+            if slug not in known:
+                kept = dict(o)
+                kept["status"] = kept.get("status") or "planned"
+                merged.append(kept)
+        pages = merged
+    return {"version": 1, "generated_at": now_iso(),
+            "source": "semantic-map" if smap else "inventory",
+            "pages": pages}
+
+
+def cmd_plan(root, out, write=False, force=False, extra_exclude=None):
+    data = ensure_inventory(out, root, extra_exclude or [])
+    if data is None:
+        raise SystemExit("plan：无法读取/生成 inventory.json")
+    existing = None if force else load_plan(out)
+    plan = build_plan(data, out, existing)
+    errs = validate_plan(plan)
+    if errs:
+        for e in errs:
+            eprint("  ! %s" % e)
+        raise SystemExit("plan 校验失败（%d 项）" % len(errs))
+    print("页面树（%d 页；来源 %s%s）:" % (len(plan["pages"]), plan.get("source"),
+                                        "；已保留人工编辑" if existing else ""))
+    for ln in plan_tree_md(plan).splitlines():
+        print("  %s" % ln)
+    if write:
+        save_plan(out, plan)
+        print("已写入 %s" % os.path.relpath(os.path.join(out, PLAN_FILE), root))
+    else:
+        print("（dry-run：加 --write 落盘 .devdocs-plan.json）")
+    return 0
+
+
+def validate_plan(plan):
+    pages = plan.get("pages") or []
+    slugs = [p.get("slug") for p in pages if p.get("slug")]
+    errs, seen = [], set()
+    for p in pages:
+        s = p.get("slug")
+        if not s:
+            errs.append("存在缺 slug 的页")
+            continue
+        if s in seen:
+            errs.append("slug 重复：%s" % s)
+        seen.add(s)
+        if p.get("type") not in PAGE_TYPES:
+            errs.append("%s：type 非法（%s）" % (s, p.get("type")))
+        if p.get("type") in ("reference", "data") and not p.get("module_id"):
+            errs.append("%s：缺 module_id" % s)
+        par = p.get("parent")
+        if par and par not in slugs:
+            errs.append("%s：parent 不存在（%s）" % (s, par))
+    by = {p.get("slug"): p for p in pages if p.get("slug")}
+    for s in slugs:
+        chain, cur = set(), s
+        while cur:
+            if cur in chain:
+                errs.append("parent 链存在环：%s" % s)
+                break
+            chain.add(cur)
+            cur = (by.get(cur) or {}).get("parent")
+    return errs
+
+
+def plan_tree_md(plan, with_status=True):
+    """页面树 → markdown 嵌套列表（index 文档树 / plan dry-run 共用）。"""
+    if not plan:
+        return "<!-- 页面树未生成：先运行 plan --write -->"
+    pages = plan.get("pages") or []
+    kids = {}
+    for p in pages:
+        kids.setdefault(p.get("parent"), []).append(p)
+    lines, seen = [], set()
+
+    def walk(parent, depth):
+        for p in kids.get(parent, []):
+            s = p.get("slug")
+            if not s or s in seen:
+                continue
+            seen.add(s)
+            icon = {"filled": "✅", "generated": "🟡"}.get(p.get("status"), "⬜") if with_status else "•"
+            lines.append("%s- %s [%s](%s.md) — %s" % ("    " * depth, icon,
+                                                      p.get("title") or s, s,
+                                                      p.get("purpose") or ""))
+            walk(s, depth + 1)
+    walk(None, 0)
+    for p in pages:
+        if p.get("slug") not in seen:
+            seen.add(p.get("slug"))
+            lines.append("- ⬜ [%s](%s.md)（parent 未解析）" % (p.get("title") or p["slug"], p["slug"]))
+    return "\n".join(lines)
+
+
+def set_page_status(out, slug, status):
+    """更新页面树中某页进度（planned→generated→filled）。"""
+    plan = load_plan(out)
+    if not plan:
+        return
+    p = page_by_slug(plan, slug)
+    if not p:
+        return
+    order = {"planned": 0, "generated": 1, "filled": 2}
+    if order.get(status, 0) > order.get(p.get("status") or "planned", 0):
+        p["status"] = status
+        save_plan(out, plan)
+
+
+def format_source_files(files, limit=12):
+    files = list(files or [])
+    if not files:
+        return "（待补：本页相关源文件）"
+    s = "、".join("`%s`" % f for f in files[:limit])
+    if len(files) > limit:
+        s += " …（共 %d 个）" % len(files)
+    return s
+
+
+def collect_page_refs(text, inv_data):
+    """抽取页内 file:line 引用（仅保留项目文件全集内的），去重排序 → Sources 列表。"""
+    all_files = {f["path"] for f in inv_data.get("files", [])}
+    hits = {}
+    for path, line in REF_RE.findall(text):
+        p = path.replace("\\", "/").lstrip("./")
+        if p in all_files:
+            hits.setdefault(p, set()).add(int(line))
+    rows = []
+    for p in sorted(hits):
+        ls = sorted(hits[p])
+        # v1.4.1：不再截断（此前超 20 行会显示 `…`，导致 Sources 不完整）
+        rows.append("- `%s`：%s" % (p, "、".join(str(x) for x in ls)))
+    return rows
+
+
+def fill_sources(text, inv_data):
+    """把 <!-- SOURCES:AUTO --> 占位替换为本页引用清单。"""
+    rows = collect_page_refs(text, inv_data)
+    if not rows:
+        rows = ["（本页尚无 file:line 引用；填写语义时请引用源码原文——格式为 文件路径:行号）"]
+    return text.replace(SOURCES_MARK, "\n".join(rows))
+
+
+def page_values(inv_data, out, page):
+    """统一模板变量（各类型共用；_Safe 缺省为空串）。"""
+    typ = page.get("type")
+    mid = page.get("module_id") or ""
+    m = module_by_id(inv_data, mid) if mid else None
+    langs = inv_data.get("langs") or {}
+    vals = {
+        "title": page.get("title") or page.get("slug"),
+        "purpose": page.get("purpose") or "（待补：本页回答什么）",
+        "doc_id": doc_id_for(page), "type": typ or "", "module_id": mid,
+        "plan_slug": page.get("slug") or "",
+        "commit": inv_data.get("source_commit") or "",
+        "generated_at": now_iso(),
+        "inventory_hash": inv_data.get("_inventory_hash") or "",
+        "status": "draft",
+        "source_files": format_source_files(
+            [p for p in (page.get("source_files") or []) if p not in ignored_paths(out)]),
+        "project": os.path.basename(inv_data.get("root") or "") or "project",
+        "langs": ",".join(langs) or "?",
+        "sections_list": " / ".join(page.get("sections") or []),
+        "doc_tree": plan_tree_md(load_plan(out)),
+        "n_modules": len(inv_data.get("modules") or []),
+        "n_symbols": len(inv_data.get("symbols") or []),
+        "n_endpoints": len(inv_data.get("endpoints") or []),
+        "n_tests": len(inv_data.get("tests") or []),
+        "n_files": len(inv_data.get("files") or []),
+        "n_page_symbols": len([s for s in inv_data.get("symbols", []) if s.get("module") == mid]) +
+                          len([e for e in inv_data.get("endpoints", []) if e.get("module") == mid]),
+        "module_rows": arch_module_rows(inv_data, out),
+    }
+    if typ == "reference" and m:
+        vals.update(reference_tpl_values(inv_data, m))
+        vals["module_name"] = m.get("name") or m["id"]
+    if typ == "architecture":
+        vals.update(arch_values(inv_data))
+        vals["module_rows"] = arch_module_rows(inv_data, out)
+    if typ == "index":
+        vals.update(coverage_values(inv_data, out))
+    return vals
+
+
+def coverage_values(inv_data, out, rep=None):
+    """覆盖率机器字段（index 页由 extract 与 report 共用，勿手写）。"""
+    rep = rep or analyze(inv_data, out)
+    ps = rep.get("page_stat") or {}
+    ok = not (rep["orphan_syms"] or rep["orphan_eps"] or rep["phantom"] or rep["stale"]
+              or rep["section_missing"] or rep["ref_errors"])
+    return {
+        "registered": rep["registered_count"], "want_count": rep["want_count"],
+        "orphan": len(rep["orphan_syms"]) + len(rep["orphan_eps"]),
+        "phantom": len(rep["phantom"]), "stale": len(rep["stale"]),
+        "doc_count": rep["doc_count"],
+        "file_total": rep["file_total"], "file_covered": rep["file_covered"],
+        "file_ignored": rep["file_ignored"], "file_uncovered_n": len(rep["file_uncovered"]),
+        "page_total": ps.get("total", 0), "page_filled": ps.get("filled", 0),
+        "page_generated": ps.get("generated", 0), "page_planned": ps.get("planned", 0),
+        "check_status": "PASS（ERROR=0）" if ok else "有未处理项",
+        "ai_fill": len(rep.get("ai_fill") or []),
+    }
+
+
 # ---------------- 文档生成（extract） ----------------
 
 def ensure_inventory(out, root, extra_exclude, project_type="auto"):
@@ -335,68 +720,138 @@ def ensure_inventory(out, root, extra_exclude, project_type="auto"):
     return data
 
 
-def _regen_or_new(out, rel_path, new_text):
-    """目标存在则保留 marker 外（pre/post=标题+人工四问/补充）只刷新生成区，输出 draft。"""
-    final = os.path.join(out, rel_path)
-    draft = final + ".draft"
+def _merge_doc(old_text, new_text, keep_status=False):
+    """合并新旧文档：frontmatter 元数据与 AI-GEN 机器区取新；
+    区外内容（标题/AI 填写正文/人工补充）保留——旧区外为空时才采用新版模板内容。
+    v1.4 关键约定：AI 要填的叙事节位于 AI-GEN 区**外**，因此重生成永不冲掉已填语义。"""
     meta_new, rest_new = parse_frontmatter(new_text)
     _, new_pre, new_inside, new_post = split_doc(rest_new)
+    meta_old, pre_old, inside_old, post_old = split_doc(old_text)
+    fm = dict(meta_old or {})
+    for k in ("type", "module_id", "plan_slug", "source_commit", "inventory_hash",
+              "generated_at"):
+        v = (meta_new or {}).get(k)
+        if v:
+            fm[k] = v
+    if not fm.get("doc_id"):
+        fm["doc_id"] = (meta_new or {}).get("doc_id", "")
+    if not (keep_status and fm.get("status")):
+        fm["status"] = (meta_new or {}).get("status") or "draft"
+    pre = pre_old if (pre_old or "").strip() else (new_pre or "")
+    post = post_old if (post_old or "").strip() else (new_post or "")
+    # 「相关源文件」行：机器维护，位置不变（即使该行在 AI-GEN 区外也刷新）
+    pre = _sync_source_line(pre, new_pre)
+    post = _sync_source_line(post, new_post)
+    inside = new_inside if new_inside is not None else (inside_old or "")
+    return compose(fm, pre, inside, post)
+
+
+def _sync_source_line(old, new):
+    """把旧文本的「**相关源文件**：…」行替换为新渲染值（无则原样返回）。"""
+    m = _SRC_LINE_RE.search(new or "")
+    if not m or not _SRC_LINE_RE.search(old or ""):
+        return old
+    return _SRC_LINE_RE.sub(lambda _m: m.group(0), old, count=1)
+
+
+def _regen_or_new(out, rel_path, new_text):
+    """目标存在则保留区外（标题/AI 填写/人工补充）只刷新 AI-GEN 机器区，输出 draft。"""
+    final = os.path.join(out, rel_path)
+    draft = final + ".draft"
     if os.path.exists(final):
-        meta_old, pre_old, inside_old, post_old = split_doc(read(final))
-        fm = dict(meta_new or {})
-        if meta_old:
-            for k in ("doc_id", "type", "module_id"):
-                if meta_old.get(k):
-                    fm[k] = meta_old[k]
-        pre = pre_old if pre_old is not None else (new_pre or "")
-        post = post_old if post_old is not None else (new_post or "")
-        inside = new_inside if new_inside is not None else (inside_old or "")
-        write(draft, compose(fm, pre, inside, post))
+        write(draft, _merge_doc(read(final), new_text))
     else:
         write(draft, new_text)
     return os.path.relpath(draft, out)
 
 
-def extract_layer(inv_data, root, out, layer, module_id):
+def _refresh_generated(out, rel_path, new_text):
+    """直接刷新正式文件的机器区（report 用；同样保留区外人工/AI 内容与 status）。"""
+    final = os.path.join(out, rel_path)
+    text = _merge_doc(read(final), new_text, keep_status=True) if os.path.exists(final) else new_text
+    write(final, text)
+    return os.path.relpath(final, out)
+
+
+def select_pages(plan, layer, module_id=None, page_slug=None):
+    pages = (plan or {}).get("pages") or []
+    if page_slug:
+        p = page_by_slug(plan, page_slug)
+        return [p] if p else []
+    if layer == "all":
+        return [p for p in pages if p.get("type") != "data"]
+    if layer == "reference" and module_id:
+        return [p for p in pages if p.get("type") == "reference" and p.get("module_id") == module_id]
+    return [p for p in pages if p.get("type") == layer]
+
+
+def _extract_legacy(inv_data, root, out, layer, module_id):
+    """无页面树时的旧行为（向后兼容 v1.3 存量库）。"""
     modules = inv_data["modules"]
     if module_id:
         modules = [m for m in modules if m["id"] == module_id]
     written = []
     if layer == "architecture":
         written.append(_regen_or_new(out, "architecture.md",
-                                     render("architecture.md", arch_values(inv_data))))
+                                     render("architecture.md", page_values(inv_data, out, {
+                                         "slug": "architecture", "type": "architecture",
+                                         "title": "架构总览",
+                                         "purpose": PAGE_PURPOSE["architecture"],
+                                         "source_files": root_files(inv_data, out)}))))
     elif layer == "reference":
         for m in modules:
             written.append(_regen_or_new(out, "reference/%s.md" % module_slug(m),
-                                         render("reference.md", reference_tpl_values(inv_data, m))))
+                                         render("reference.md", page_values(inv_data, out, {
+                                             "slug": "reference/%s" % module_slug(m),
+                                             "type": "reference", "module_id": m["id"],
+                                             "title": m.get("name") or m["id"],
+                                             "purpose": "（待补：本模块职责一句话）",
+                                             "source_files": module_files(inv_data, m)}))))
     elif layer == "data":
         for m in modules:
-            vals = {
-                "MOD-id": m["id"], "module_name": m["name"],
-                "commit": inv_data.get("source_commit") or "",
-                "generated_at": now_iso(),
-                "inventory_hash": inv_data.get("_inventory_hash") or "",
-                "status": "draft",
-                "entity_rows": "<!-- TODO AI：依源码中的模型/ORM 类补齐实体与字段（缺失写 unknown） -->",
-            }
+            vals = page_values(inv_data, out, {
+                "slug": "data/%s" % module_slug(m), "type": "data",
+                "module_id": m["id"], "title": m.get("name") or m["id"],
+                "purpose": "（待补：本模块数据模型）", "source_files": module_files(inv_data, m)})
             written.append(_regen_or_new(out, "data/%s.md" % module_slug(m),
                                          render("data.md", vals)))
     else:
-        raise SystemExit("未知 layer: %s（可选 architecture|reference|data）" % layer)
+        raise SystemExit("未知 layer: %s（可选 architecture|reference|data|index|usage|all）" % layer)
+    return written
+
+
+def extract_layer(inv_data, root, out, layer, module_id=None, page_slug=None):
+    if load_plan(out) is None:
+        written = _extract_legacy(inv_data, root, out, layer, module_id)
+    else:
+        plan = load_plan(out)
+        targets = select_pages(plan, layer, module_id, page_slug)
+        if not targets:
+            raise SystemExit("extract：页面树中没有匹配页（layer=%s module=%s page=%s）"
+                             % (layer, module_id, page_slug))
+        written = []
+        for p in targets:
+            tpl = PAGE_TPL.get(p.get("type"))
+            if not tpl:
+                continue
+            txt = fill_sources(render(tpl, page_values(inv_data, out, p)), inv_data)
+            written.append(_regen_or_new(out, "%s.md" % p["slug"], txt))
+            set_page_status(out, p["slug"], "generated")
     print("生成 %d 个 draft（<target>.md.draft）：" % len(written))
     for w in written:
         print("  - %s" % w)
-    print("AI 填充每处 <!-- TODO ... --> 后，经人工确认执行: promote <file.draft>")
+    print("AI 按每页 <!-- AI-FILL --> 工单填写后，经人工确认执行: promote <file.draft>")
+    return 0
 
 
-def cmd_promote(out, draft_path):
+def cmd_promote(out, draft_path, inv_data=None):
     if not os.path.isabs(draft_path):
         cand = os.path.join(out, draft_path)
         if os.path.exists(cand):
             draft_path = cand
     draft_path = os.path.abspath(draft_path)
     if not draft_path.endswith(".draft"):
-        raise SystemExit("promote 目标需为 *.draft（如 modules/MOD-001.md.draft）")
+        raise SystemExit("promote 目标需为 *.draft（如 reference/pico.md.draft）")
     if not os.path.exists(draft_path):
         raise SystemExit("draft 不存在: %s" % draft_path)
     final = draft_path[:-len(".draft")]
@@ -407,6 +862,10 @@ def cmd_promote(out, draft_path):
     if not has_marker:
         print("  ! 警告：文件无 AI-GEN marker（纯人工文档，promote 将直接转正）")
     meta, rest = parse_frontmatter(text)
+    # 转正前刷新 Sources（把 AI 新填的 file:line 引用收进本页引用清单）
+    if inv_data is not None:
+        text = fill_sources(text, inv_data)
+        meta, rest = parse_frontmatter(text)
     if meta is None or not meta.get("doc_id"):
         print("  ! 警告：文件缺 frontmatter（doc_id），建议补上以便对账")
     else:
@@ -415,6 +874,9 @@ def cmd_promote(out, draft_path):
         text = render_frontmatter(meta) + rest
     write(final, text)
     os.remove(draft_path)
+    # 页面树进度：仍有 AI-FILL 工单 → generated（语义待填）；工单清空 → filled（已填充）
+    slug = (meta or {}).get("plan_slug") or os.path.relpath(final, out).replace("\\", "/")[:-3]
+    set_page_status(out, slug, "generated" if "<!-- AI-FILL" in text else "filled")
     print("完成。建议运行: check --dir <目标项目>")
 
 
@@ -624,6 +1086,167 @@ def drift_diff(inv_now, out):
             "affected_mods": sorted(affected_mods)}
 
 
+def _norm_head(s):
+    """标题/章节名规范化（去编号、标点、空白）——用于结构匹配。"""
+    return re.sub(r"[\s#*`：:（）()【】\[\]0-9.、,，\-—_]+", "", s or "")
+
+
+def page_structure_errors(inv_data, out, plan):
+    """页面结构门禁：①plan 标为已生成的页缺文件 ②产物页缺必需章节。"""
+    missing_pages, section_missing = [], []
+    for p in (plan or {}).get("pages") or []:
+        rel = "%s.md" % (p.get("slug") or "")
+        fp = os.path.join(out, rel)
+        if not os.path.exists(fp):
+            if os.path.exists(fp + ".draft"):
+                continue          # 中间态：draft 已生成待 promote，不算结构错误
+            if p.get("status") != "planned":
+                missing_pages.append("%s（plan 标为 %s 但文件不存在）" % (rel, p.get("status")))
+            continue
+        heads = [_norm_head(h) for h in re.findall(r"^#+ .*$", read(fp), re.M)]
+        for sec in p.get("sections") or []:
+            key = _norm_head(sec)
+            if key and not any(key in h for h in heads):
+                section_missing.append("%s 缺节「%s」" % (rel, sec))
+    return missing_pages, section_missing
+
+
+def page_ref_errors(inv_data, out):
+    """页内 file:line 引用指向项目文件全集之外 → ERROR（防编造）。"""
+    all_files = {f["path"] for f in inv_data.get("files") or []}
+    errs = []
+    if not all_files:
+        return errs
+    for fp in list_md(out):
+        rel = os.path.relpath(fp, out).replace("\\", "/")
+        for path, line in REF_RE.findall(read(fp)):
+            p = path.replace("\\", "/").lstrip("./")
+            if p not in all_files:
+                errs.append("%s -> %s:%s" % (rel, p, line))
+    return errs
+
+
+def _line_kind(lines, lineno):
+    """源码行性质：code / import / comment / blank / oor（越界）。"""
+    if lineno < 1 or lineno > len(lines):
+        return "oor"
+    s = lines[lineno - 1].strip()
+    if not s:
+        return "blank"
+    if s.startswith("#"):
+        return "comment"
+    if s.startswith(("import ", "from ")):
+        return "import"
+    return "code"
+
+
+def _is_def_line(s):
+    """该行是否为"定义行"（def/class/赋值）——优先作为建议目标。"""
+    t = s.strip()
+    return t.startswith(("def ", "async def ", "class ")) or (" = " in t)
+
+
+def _suggest_line(lines, lineno, window=8):
+    """在 lineno 附近找建议行：**优先定义行**（def/class/赋值），否则退化为非空非注释行；
+    方向为"先向上再向下"——手写行号偏大的情形远多于偏小（常把注释块行尾/空行当锚点）。"""
+    n = len(lines)
+    for want_def in (True, False):
+        for d in range(0, window + 1):
+            for cand in (lineno - d, lineno + d):
+                if not (1 <= cand <= n):
+                    continue
+                kind = _line_kind(lines, cand)
+                if kind not in ("code", "import"):
+                    continue
+                if want_def and kind == "code" and not _is_def_line(lines[cand - 1]):
+                    continue
+                return cand
+    return None
+
+
+def ref_line_issues(inv_data, out, fix=False):
+    """页内 file:line 的**行号合理性**校验（v1.4.1，机制化治"手写行号偏移"）：
+    - 引用的行是空行 / 注释行 / 越界 → **明确错误**，建议邻近代码行，可自动修（auto=True）
+    - 引用的行是 import/from 语句、而该处上下文并未在讲"依赖/导入" → 疑似把"文件开头"当锚点，
+      只提示不自动改（auto=False，避免误改正当引用）
+    不含"文件不存在"的引用——那由 ref_file_missing 负责。"""
+    root = inv_data.get("root") or ""
+    all_files = {f["path"] for f in inv_data.get("files") or []}
+    issues = []
+    for fp in list_md(out):
+        rel = os.path.relpath(fp, out).replace("\\", "/")
+        text = read(fp)
+        changed = False
+        for m in REF_RE.finditer(text):
+            path, line = m.group(1), m.group(2)
+            p = path.replace("\\", "/").lstrip("./")
+            if p not in all_files:
+                continue
+            try:
+                with open(os.path.join(root, p), encoding="utf-8", errors="replace") as fh:
+                    lines = fh.read().splitlines()
+            except OSError:
+                continue
+            i = int(line)
+            kind = _line_kind(lines, i)
+            if kind == "code":
+                continue
+            # 自动修仅限"明确错误"：空行 / 越界；注释与 import 行只提示（避免误改正当引用）
+            auto = kind in ("blank", "oor")
+            if kind == "import":
+                # 取引用所在行 + 上一行作为上下文（说明词可能跨行）
+                ls = text.rfind("\n", 0, m.start()) + 1
+                le = text.find("\n", m.end())
+                prev_ls = text.rfind("\n", 0, max(0, ls - 1)) + 1
+                ctx = (text[prev_ls:ls] + text[ls: le if le != -1 else len(text)]).lower()
+                if any(k in ctx for k in ("import", "导入", "依赖", "依赖项", "引入", "引用")):
+                    continue          # 正当引用 import 行
+            sug = _suggest_line(lines, i)
+            issues.append({"doc": rel, "ref": "%s:%d" % (p, i), "kind": kind,
+                           "file": p, "line": i, "suggest": sug, "auto": auto})
+            if fix and auto and sug and sug != i:
+                old, new = "%s:%d" % (path, i), "%s:%d" % (path, sug)
+                if old in text:
+                    text = text.replace(old, new)
+                    changed = True
+        if fix and changed:
+            write(fp, text)
+    return issues
+
+
+def cmd_fixrefs(root, out, inv_data=None, write=False):
+    """修正「引用行号指向空行/注释行/越界」的偏差（默认 dry-run 显示建议）。"""
+    data = inv_data if inv_data is not None else load_inventory(out)
+    if data is None:
+        raise SystemExit("fixrefs：缺少 inventory.json（先运行 inventory）")
+    issues = ref_line_issues(data, out, fix=write)
+    if not issues:
+        print("fixrefs：未发现行号异常引用 ✓")
+        return 0
+    fixable = [it for it in issues if it["auto"] and it["suggest"] and it["suggest"] != it["line"]]
+    for it in issues[:40]:
+        tip = ("建议 %s:%d" % (it["file"], it["suggest"])) if it["suggest"] else "未找到邻近有效行"
+        flag = "自动可修" if it["auto"] else "需人工判断"
+        print("  [%s|%s] %s 引用 %s → %s" % (it["kind"], flag, it["doc"], it["ref"], tip))
+    if len(issues) > 40:
+        print("  … 共 %d 项" % len(issues))
+    if write:
+        print("已自动修正 %d 处；%d 处需人工复核" % (len(fixable), len(issues) - len(fixable)))
+    else:
+        print("（dry-run：加 --write 应用可自动修正的 %d 处；共 %d 项）" % (len(fixable), len(issues)))
+    return 0
+
+
+def ai_fill_hits(out):
+    """AI-FILL 工单残留（章节级未完成标记）→ 每文件计数。"""
+    hits = []
+    for fp in list_md(out):
+        n = read(fp).count("<!-- AI-FILL")
+        if n:
+            hits.append("%s（%d 处）" % (os.path.relpath(fp, out).replace("\\", "/"), n))
+    return hits
+
+
 def analyze(inv_data, out, drift=False):
     reg, doc_files = collect_registered(out)
     reg_items = load_registered(out)
@@ -651,6 +1274,17 @@ def analyze(inv_data, out, drift=False):
         except ValueError:
             out_rel = ""
     f_total, f_covered, f_uncovered, f_ignored = file_coverage(inv_data, smap, out_rel)
+    # v1.4 页面树结构门禁
+    plan = load_plan(out)
+    missing_pages, section_missing = page_structure_errors(inv_data, out, plan)
+    ref_errors = page_ref_errors(inv_data, out)
+    ref_lines = ref_line_issues(inv_data, out)      # v1.4.1：引用行号合理性（空行/注释行=疑似偏移）
+    fill_hits = ai_fill_hits(out)
+    page_stat = {"total": 0, "filled": 0, "generated": 0, "planned": 0}
+    for p in (plan or {}).get("pages") or []:
+        page_stat["total"] += 1
+        st = p.get("status") if p.get("status") in ("filled", "generated") else "planned"
+        page_stat[st] += 1
     drift_info = None
     if drift:
         drift_info = drift_diff(inv_data, out)
@@ -663,20 +1297,37 @@ def analyze(inv_data, out, drift=False):
         "has_semantic_map": smap is not None,
         "file_total": f_total, "file_covered": f_covered,
         "file_uncovered": f_uncovered, "file_ignored": f_ignored,
+        "has_plan": plan is not None, "page_stat": page_stat,
+        "plan_missing_pages": missing_pages, "section_missing": section_missing,
+        "ref_errors": ref_errors, "ai_fill": fill_hits,
+        "ref_line_issues": ref_lines,
     }
 
 
-def cmd_check(inv_data, out, drift, root=None):
+def cmd_check(inv_data, out, drift, root=None, strict=False):
     if inv_data is None:
         raise SystemExit("缺少 inventory.json，先运行 inventory 或带 --drift 重扫")
     rep = analyze(inv_data, out, drift=drift)
-    problems = (rep["orphan_syms"] + rep["orphan_eps"] + rep["phantom"]
-                + rep["stale"] + rep["reg_file_errors"])
+    errors = (rep["orphan_syms"] + rep["orphan_eps"] + rep["phantom"] + rep["stale"]
+              + rep["reg_file_errors"] + rep["plan_missing_pages"]
+              + rep["section_missing"] + rep["ref_errors"])
+    warns = list(rep["ai_fill"])
+    if rep.get("ref_line_issues"):
+        warns.append("引用行号疑似偏移 %d 处（运行 fixrefs 查看，--write 自动修正）"
+                     % len(rep["ref_line_issues"]))
+    if rep["has_semantic_map"] and rep["file_uncovered"]:
+        warns.append("文件未归属 %d 个（语义地图 files/ignored_files 未覆盖）" % len(rep["file_uncovered"]))
     print("=== dev-docs check ===")
     print("登记符号/端点：%d / %d　文档文件：%d　人工登记：%d" %
           (rep["registered_count"], rep["want_count"], rep["doc_count"],
            len(rep["reg_items"])))
-    # 文件级防漏（LLM 提取的覆盖门禁素材；缺失地图仅提示，不作为门禁）
+    ps = rep["page_stat"]
+    if rep["has_plan"]:
+        print("页面树：%d 页（✅ filled %d / 🟡 generated %d / ⬜ planned %d）"
+              % (ps["total"], ps["filled"], ps["generated"], ps["planned"]))
+    else:
+        print("页面树：未生成（.devdocs-plan.json 缺失；运行 plan --write 启用结构门禁）")
+    # 文件级防漏（LLM 提取的覆盖门禁素材）
     if rep["has_semantic_map"]:
         print("文件覆盖：%d / %d（ignored %d，未覆盖 %d）" %
               (rep["file_covered"], rep["file_total"],
@@ -711,59 +1362,60 @@ def cmd_check(inv_data, out, drift, root=None):
                    len(d["added_ids"]), len(d["removed_ids"])))
             if not d["changed_files"] and not d["added_ids"] and not d["removed_ids"]:
                 print("drift: 无漂移 ✓")
-    for label, items in (("orphan(有码无文)", rep["orphan_syms"] + rep["orphan_eps"]),
-                         ("phantom(有文无码)", rep["phantom"]),
-                         ("stale(文档过期)", rep["stale"]),
-                         ("reg_file_error(登记指向不存在的文件)", rep["reg_file_errors"])):
+    groups = (("orphan(有码无文)", rep["orphan_syms"] + rep["orphan_eps"],
+               "补文档卡片或 register 登记"),
+              ("phantom(有文无码)", rep["phantom"], "删除锚点或补 register 登记"),
+              ("stale(文档过期)", rep["stale"], "重跑 extract 并 promote"),
+              ("reg_file_error(登记指向不存在的文件)", rep["reg_file_errors"], "修正 .registered.json 的 file"),
+              ("plan_missing_page(页面树应有但未生成)", rep["plan_missing_pages"], "运行 extract --layer all"),
+              ("section_missing(页缺必需章节)", rep["section_missing"], "运行 brief --page <slug> 取工单补齐"),
+              ("ref_file_missing(引用文件不在项目全集)", rep["ref_errors"], "核对 file 路径或删除编造引用"),
+              ("ref_line_suspect(引用行号指向空行/注释行)",
+               ["%s → %s" % (it["doc"], it["ref"]) for it in (rep.get("ref_line_issues") or [])],
+               "运行 fixrefs --write 自动修正"))
+    if strict:
+        groups = groups + (("ai_fill_left(AI 工单未填尽)", rep["ai_fill"], "填写对应章节后删除 <!-- AI-FILL --> 块"),)
+    for label, items, fix in groups:
         if items:
-            print("[%s] %d 项:" % (label, len(items)))
+            print("[%s] %d 项（%s）:" % (label, len(items), fix))
             for it in items[:20]:
                 print("    - %s" % it)
             if len(items) > 20:
                 print("    ... 共 %d" % len(items))
-    if problems:
-        print("RESULT: FAIL（%d 项待处理；修复后重新 check）" % len(problems))
+    if warns and not strict:
+        print("[warn] %d 项（--strict 时升级为 ERROR；可分批交付）:" % len(warns))
+        for w in warns[:10]:
+            print("    ~ %s" % w)
+    if errors or (strict and warns):
+        print("RESULT: FAIL（ERROR=%d%s）" % (len(errors),
+                                             "，WARN=%d" % len(warns) if warns else ""))
         return 1
-    print("RESULT: PASS（ERROR=0）")
+    print("RESULT: PASS（ERROR=0%s）" % ("，WARN=%d" % len(warns) if warns else ""))
     return 0
 
 
-def index_rows(inv_data, out, rep):
-    ref_rows = []
-    data_rows = []
-    for m in inv_data["modules"]:
-        slug = module_slug(m)
-        rp = os.path.join("reference", "%s.md" % slug)
-        if os.path.exists(os.path.join(out, rp)):
-            ref_rows.append("| [%s](%s) | 详档：%s（%s） |" % (m["name"], rp, m["name"], m["id"]))
-        dp = os.path.join("data", "%s.md" % slug)
-        if os.path.exists(os.path.join(out, dp)):
-            data_rows.append("| [%s](%s) | 数据：%s（%s） |" % (m["name"], dp, m["name"], m["id"]))
-    status = "PASS" if not (rep["orphan_syms"] or rep["orphan_eps"] or rep["phantom"] or rep["stale"]) else "有未处理项"
-    return {
-        "project": os.path.basename(inv_data.get("root") or ""),
-        "generated_at": now_iso(),
-        "source_commit": inv_data.get("source_commit") or "",
-        "langs": ",".join(inv_data.get("langs", {})) or "?",
-        "n_modules": len(inv_data["modules"]),
-        "n_symbols": len(inv_data.get("symbols", [])),
-        "n_endpoints": len(inv_data.get("endpoints", [])),
-        "n_tests": len(inv_data.get("tests", [])),
-        "reference_rows": "\n".join(ref_rows) or "| — | 暂无 reference 详档 |",
-        "data_rows": "\n".join(data_rows) or "| — | 数据层（可选，未启用） |",
-        "registered": rep["registered_count"],
-        "orphan": len(rep["orphan_syms"]) + len(rep["orphan_eps"]),
-        "stale": len(rep["stale"]),
-        "status": status,
-    }
+def index_page(inv_data, out):
+    p = page_by_slug(load_plan(out), "index")
+    if p:
+        return p
+    return {"slug": "index", "type": "index",
+            "title": "%s — 文档总览" % (os.path.basename(inv_data.get("root") or "") or "project"),
+            "purpose": PAGE_PURPOSE["index"], "sections": list(PAGE_SECTIONS["index"]),
+            "source_files": root_files(inv_data, out), "parent": None, "status": "planned"}
+
+
+def index_values(inv_data, out, rep):
+    vals = page_values(inv_data, out, index_page(inv_data, out))
+    vals.update(coverage_values(inv_data, out, rep=rep))
+    return vals
 
 
 def cmd_report(inv_data, root, out):
     if inv_data is None:
         inv_data = cmd_inventory(root, out, [])
     rep = analyze(inv_data, out)
-    vals = index_rows(inv_data, out, rep)
-    write(os.path.join(out, "index.md"), render("index.md", vals))
+    vals = index_values(inv_data, out, rep)
+    _refresh_generated(out, "index.md", fill_sources(render("index.md", vals), inv_data))
     # baseline
     doc_hashes = {}
     for fp in list_md(out):
@@ -779,11 +1431,142 @@ def cmd_report(inv_data, root, out):
         "docs": doc_hashes,
     }
     json_save(os.path.join(out, ".baseline.json"), baseline)
-    print("index.md 已更新；.baseline.json 已刷新（docs %d）" % len(doc_hashes))
+    print("index.md 已刷新（机器区）；.baseline.json 已刷新（docs %d）" % len(doc_hashes))
     print("覆盖率：registered %d / %d；orphan %d；phantom %d；stale %d" %
           (rep["registered_count"], rep["want_count"],
            len(rep["orphan_syms"]) + len(rep["orphan_eps"]),
            len(rep["phantom"]), len(rep["stale"])))
+
+
+# ---------------- 页级填写工单（brief：LLM 提取接口） ----------------
+
+BRIEF_HINTS = {
+    "index": ["先写一句话定位（是什么、给谁用），再写能力矩阵",
+              "能力矩阵每行给出处（file:line 或链接）；数字不要手写，机器会渲染覆盖率",
+              "文档树由 plan 渲染（勿手改结构）；purpose 与 plan 一致",
+              "阅读路径按角色分（新人 / 维护者 / AI）"],
+    "architecture": ["系统上下文：使用者、触发方式、外部交互清单 + 边界图（mermaid 或文本）",
+                     "构建块视图：每个模块一张白盒卡（职责/对外接口/依赖/被依赖/内部结构）",
+                     "运行时场景 ≥2 个：分步骤序列，每步带 file:line",
+                     "横切与决策：安全/持久化/错误约定；why 标「人类待确认」",
+                     "术语表 8-20 条项目专属术语"],
+    "usage": ["安装与启动：命令 + 前置条件（README 摘录 + 链接，不复制原文）",
+              "配置：表格（键｜含义｜默认｜来源 file:line）",
+              "常见任务 ≥3 个：编号步骤，读者可照做",
+              "扩展点：新增一个 X 的步骤化说明",
+              "故障排查：错误信息 → 原因 → 处置"],
+    "reference": ["概览四问：做什么 / 为何存在 / 依赖什么 / 谁依赖它",
+                  "组件与协作：组件清单（含 file:line）+ 装配期与运行期两条协作链 + 关键设计要点",
+                  "使用指南：典型用法（示例取自测试并注明 文件::用例）+ 扩展点步骤",
+                  "对外接口面：名称 / 签名 / 契约 表",
+                  "符号索引与详细契约在 AI-GEN 区（机器全量；卡片按批填充）"],
+    "data": ["实体与字段（缺失写 unknown）", "关系（外键/引用）", "存储与生命周期"],
+}
+
+BRIEF_CHECKLIST = ["AI-FILL 残留 0", "每节 ≥1 条 file:line", "引用的文件必须在项目全集内",
+                   "组件名 ⊆ 语义地图 components", "上列登记项全部出现", "示例注明来源"]
+
+
+def brief_data(inv_data, out, page):
+    typ = page.get("type") or ""
+    mid = page.get("module_id") or ""
+    files = [str(p).replace("\\", "/") for p in (page.get("source_files") or [])]
+    fileset = set(files)
+    syms = [s for s in inv_data.get("symbols", []) if mid and s.get("module") == mid]
+    eps = [e for e in inv_data.get("endpoints", []) if mid and e.get("module") == mid]
+    regs = [it for it in load_registered(out) if it.get("file") in fileset]
+    tests = []
+    for t in inv_data.get("tests", []) or []:
+        f = t.get("file") if isinstance(t, dict) else str(t)
+        if not f:
+            continue
+        d = f.rsplit("/", 1)[0] if "/" in f else ""
+        if any(f == x or (d and x.startswith(d + "/")) for x in files):
+            tests.append(f)
+    root = inv_data.get("root") or ""
+    finfo = []
+    for f in files:
+        n = 0
+        try:
+            with open(os.path.join(root, f), encoding="utf-8", errors="replace") as fh:
+                n = sum(1 for _ in fh)
+        except OSError:
+            n = 0
+        finfo.append({"file": f, "lines": n,
+                      "symbols": [s.get("qname") for s in syms if s.get("file") == f]})
+    return {
+        "slug": page.get("slug"), "type": typ, "module_id": mid,
+        "title": page.get("title") or page.get("slug"),
+        "purpose": page.get("purpose") or "",
+        "sections": list(page.get("sections") or []),
+        "source_files": finfo,
+        "symbols": [{"id": s["id"], "qname": s.get("qname"), "file": s.get("file"),
+                     "line": s.get("line", 0)} for s in syms],
+        "endpoints": [{"id": e["id"], "path": e.get("path"), "file": e.get("file"),
+                       "line": e.get("line", 0)} for e in eps],
+        "registered": [{"id": it.get("id"), "name": it.get("name"), "file": it.get("file"),
+                        "line": it.get("line"), "confidence": it.get("confidence")} for it in regs],
+        "tests": sorted(set(tests)),
+        "requirements": list(BRIEF_HINTS.get(typ, [])),
+        "checklist": list(BRIEF_CHECKLIST),
+    }
+
+
+def cmd_brief(inv_data, root, out, page_slug, as_json=False):
+    plan = load_plan(out)
+    page = page_by_slug(plan, page_slug)
+    if page is None:
+        known = "、".join([p.get("slug") for p in (plan or {}).get("pages") or []][:12])
+        raise SystemExit("brief：页面树中无此页（%s）。可用页：%s%s"
+                         % (page_slug, known or "（无）",
+                            "" if plan else "（先运行 plan --write 生成页面树）"))
+    d = brief_data(inv_data, out, page)
+    if as_json:
+        print(json.dumps(d, ensure_ascii=False, indent=2))
+        return 0
+    print("=== 填写工单：%s（type=%s%s）===" %
+          (d["slug"], d["type"], "，module=%s" % d["module_id"] if d["module_id"] else ""))
+    print("title   : %s" % d["title"])
+    print("purpose : %s" % d["purpose"])
+    print("sections: %s" % " | ".join(d["sections"]))
+    print("")
+    print("相关源文件（读这些就够）：")
+    if d["source_files"]:
+        for fi in d["source_files"][:20]:
+            extra = "：" + "、".join(fi["symbols"][:5]) if fi["symbols"] else ""
+            print("  %s（约 %d 行，符号 %d%s）" % (fi["file"], fi["lines"], len(fi["symbols"]), extra))
+        if len(d["source_files"]) > 20:
+            print("  … 共 %d 个文件" % len(d["source_files"]))
+    else:
+        print("  （plan 未给出源文件；按模块 path 自行定位）")
+    print("")
+    anchors = (["@%s %s（file %s:%s）" % (s["id"], s["qname"], s["file"], s["line"]) for s in d["symbols"]]
+               + ["@%s %s（file %s:%s）" % (e["id"], e.get("path") or "", e["file"], e["line"])
+                  for e in d["endpoints"]]
+               + ["@%s %s（file %s:%s，%s）" % (it["id"], it["name"], it["file"], it["line"],
+                                                it["confidence"]) for it in d["registered"]])
+    if anchors:
+        print("必须覆盖的登记项（写完 check 会对账）：")
+        for a in anchors[:40]:
+            print("  %s" % a)
+        if len(anchors) > 40:
+            print("  … 共 %d 项" % len(anchors))
+        print("")
+    if d["tests"]:
+        print("模块测试（示例应取自这里）：%s" % "、".join(d["tests"][:8]))
+        print("")
+    print("撰写要求：")
+    for i, h in enumerate(d["requirements"], 1):
+        print("  %d. %s" % (i, h))
+    print("  · 每条结论标 evidence：事实（file:line）/ 推断 / 假设 / 缺失（写 unknown）")
+    print("  · 签名、字段、路径必须引用源码原文；看不见的写 not visible in sources")
+    print("")
+    print("完成后自检（check 会查）：")
+    for c in d["checklist"]:
+        print("  [ ] %s" % c)
+    print("")
+    print("提示：叙事节在 AI-GEN 区外，重跑 extract 不会冲掉已填内容；填完 promote 转正。")
+    return 0
 
 
 # ---------------- CLI ----------------
@@ -802,14 +1585,22 @@ def main(argv=None):
     _force_utf8_output()
     import argparse
     ap = argparse.ArgumentParser(prog="dev_docs.py", description="dev-docs 从代码库逆向生成文档")
-    ap.add_argument("command", choices=["inventory", "extract", "promote", "check",
-                                        "report", "register"],
-                    help="inventory 盘点 | extract 生成 draft | promote draft 转正 | "
-                         "check 对账/漂移 | report 索引+基线 | register 人工登记")
+    ap.add_argument("command", choices=["inventory", "plan", "extract", "brief", "promote",
+                                        "check", "report", "register", "fixrefs"],
+                    help="inventory 盘点 | plan 页面树 | extract 生成 draft | brief 页级填写工单 | "
+                         "promote draft 转正 | check 对账/漂移 | report 索引+基线 | "
+                         "register 人工登记 | fixrefs 修正引用行号偏移")
     ap.add_argument("--dir", default=".", help="目标项目目录（默认当前目录；git 仓库内自动取仓库根）")
     ap.add_argument("--out", default="dev-docs", help="输出子目录名（docs/<out>，默认 dev-docs）")
-    ap.add_argument("--layer", choices=["architecture", "reference", "data"], help="extract 的层")
+    ap.add_argument("--layer", choices=["index", "architecture", "usage", "reference", "data", "all"],
+                    help="extract 的层（all=除 data 外全部页；无页面树时兼容 architecture|reference|data）")
     ap.add_argument("--module", help="extract 限定单个 MOD-id")
+    ap.add_argument("--page", help="extract/brief 限定的页面 slug（如 reference/pico-providers）")
+    ap.add_argument("--write", action="store_true",
+                    help="plan：落盘 .devdocs-plan.json | fixrefs：落盘行号修正（均默认 dry-run）")
+    ap.add_argument("--force", action="store_true", help="plan：忽略已有 plan（放弃人工编辑保护）")
+    ap.add_argument("--json", action="store_true", help="brief：输出 JSON（供 Agent 消费）")
+    ap.add_argument("--strict", action="store_true", help="check：把 warn（AI-FILL 残留/文件未归属）升级为 ERROR")
     ap.add_argument("--exclude", action="append", default=[], help="额外排除模式（可多次）")
     ap.add_argument("--drift", action="store_true", help="check 时重扫与基线对比漂移")
     ap.add_argument("--file", help="promote 的 draft 文件路径（相对 docs/<out>/ 或绝对路径）")
@@ -828,16 +1619,23 @@ def main(argv=None):
 
     if a.command == "inventory":
         cmd_inventory(root, out, a.exclude, project_type=a.project_type)
+    elif a.command == "plan":
+        return cmd_plan(root, out, write=a.write, force=a.force, extra_exclude=a.exclude)
     elif a.command == "extract":
-        if not a.layer:
-            raise SystemExit("extract 需要 --layer architecture|reference|data")
+        if not (a.layer or a.page):
+            raise SystemExit("extract 需要 --layer index|architecture|usage|reference|data|all 或 --page <slug>")
         # 复用已有 inventory.json（含当时 exclude），避免再次扫描产出漂移快照
         data = ensure_inventory(out, root, a.exclude, project_type=a.project_type)
-        extract_layer(data, root, out, a.layer, a.module)
+        extract_layer(data, root, out, a.layer or "all", a.module, a.page)
+    elif a.command == "brief":
+        if not a.page:
+            raise SystemExit("brief 需要 --page <slug>（先用 plan 查看可用页）")
+        data = ensure_inventory(out, root, a.exclude, project_type=a.project_type)
+        return cmd_brief(data, root, out, a.page, as_json=a.json)
     elif a.command == "promote":
         if not a.file:
             raise SystemExit("promote 需要 --file <draft 路径>（相对 docs/<out>/ 或绝对路径）")
-        cmd_promote(out, a.file)
+        cmd_promote(out, a.file, load_inventory(out))
     elif a.command == "register":
         if not (a.kind and a.name and a.src):
             raise SystemExit("register 需要 --kind symbol|endpoint|interface "
@@ -850,10 +1648,12 @@ def main(argv=None):
                                  project_type=a.project_type)
         else:
             data = load_inventory(out)
-        return cmd_check(data, out, a.drift, root)
+        return cmd_check(data, out, a.drift, root, strict=a.strict)
     elif a.command == "report":
         data = load_inventory(out)
         cmd_report(data, root, out)
+    elif a.command == "fixrefs":
+        return cmd_fixrefs(root, out, load_inventory(out), write=a.write)
     return 0
 
 

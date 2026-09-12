@@ -1,13 +1,15 @@
 ---
 name: dev-docs
-version: 1.3.0
+version: 1.4.1
 description: >
   从已有代码库反建技术文档（dev-docs）：面向没有接口/设计/架构文档的存量项目，
   用「规则提取（文件全集/机器盘点/对账漂移）+ LLM 提取（AI 通读建语义地图再按模板填文档）」双轨机制，
-  产出「架构 / 各模块详档（概览四问 + 符号索引表 + 分级契约 + 接口契约资产）/ 数据层（可选）」文档集，
-  产物直接落入目标项目 docs/dev-docs/；支持草稿合入、长期漂移检测（check --drift，非 git 用文件哈希基线）、
-  按模块增量重生成、人工补充区保护（AI-GEN marker）、人工登记通道（register，带 file:line 源码证据）、
-  证据标注防编造（evidence 协议 + unknown）。
+  产出「总览 index / 架构 architecture / 上手 usage / 各模块详档 reference / 数据层（可选 data）」三层页面树文档集，
+  每页统一格式（相关源文件头 + 机器区 + Sources 尾）；页面树由 plan 命令维护（.devdocs-plan.json），
+  AI 按 brief 命令生成的页级工单逐页填写；支持草稿合入、长期漂移检测（check --drift，非 git 用文件哈希基线）、
+  结构门禁（check：缺页 / 缺节 / 引用不存在 / AI-FILL 残留，--strict 收紧）、
+  按模块增量重生成、人工补充区保护（AI-GEN marker，AI 叙事节在区外不被重生成冲掉）、
+  人工登记通道（register，带 file:line 源码证据）、证据标注防编造（evidence 协议 + unknown）。
   语言策略：Python 由 AST 可靠提取；其他语言/生态（C++、ROS msg/srv、任意 DSL）由 LLM 语义地图覆盖，
   关键符号用 register 显式登记（不算 phantom）。
   触发词：给项目生成文档、从代码提取文档、反建文档、补接口文档、补架构文档、生成API文档、dev-docs、逆向文档化
@@ -41,29 +43,36 @@ description: >
 
 ```text
 <目标项目>/docs/dev-docs/
-├── index.md                    # 文档地图 + 覆盖率摘要（report 自动渲染）
-├── architecture.md             # 架构视图（ARCH-001）
-├── reference/<module-slug>.md  # ★ 每模块唯一详档：概览四问 + 符号索引表 + 分级契约（标题语义化）
-├── data/                       # 可选：数据层/对象模型
+├── index.md                    # L1 总览：定位/能力矩阵/文档树/阅读路径/覆盖率（机器渲染）
+├── architecture.md             # L2 架构：上下文/构建块白盒卡/运行时场景/横切决策/术语
+├── usage.md                    # L2 上手：安装启动/配置/常见任务/扩展点/故障排查
+├── reference/<module-slug>.md  # L3 每模块一页：概览四问/组件与协作/使用指南/对外接口面/符号索引/详细契约
+├── data/<module-slug>.md       # 可选：数据层/对象模型（默认不生成）
+├── .devdocs-plan.json          # ★ 页面树（plan 命令维护：pages[] 含 slug/type/title/parent/purpose/sections/source_files/status）
 ├── inventory.json              # 机器盘点：文件全集 + 符号/端点 + 哈希（唯一事实源，自动生成）
 ├── .semantic-map.json          # ★ LLM 语义地图（AI 产出 + 用户确认；文件归属/关键符号/接口契约）
 ├── .registered.json            # 人工/低置信登记（register 命令维护，必须 file:line 源码证据）
 └── .baseline.json              # 生成基线（自动维护，防漂移；含全文件哈希）
 ```
 
+页面树（DeepWiki 对齐）：`index` 为根 → `architecture` / `usage` / `reference/*` 为子页；`plan` 默认启用，
+重复运行只新增缺失页、**保留人工编辑**（title/purpose/sections 不被覆盖）。
+
 文档集类型与稳定 ID：
 
 | 类型 | 目录 | doc_id | 对应 inventory |
 |:---|:---|:---|:---|
-| 入口 | index.md | INDEX | —（report 渲染） |
-| 架构 | architecture.md | ARCH-001 | modules/deps 综合 |
+| 总览 | index.md | INDEX | —（机器渲染文档树 + 覆盖率） |
+| 架构 | architecture.md | ARCH-001 | modules/deps + 语义地图 |
+| 上手 | usage.md | USAGE-001 | 入口/配置/测试（AI 填） |
 | 详档 | reference/<module-slug>.md | MOD-xxx | modules[] + symbols[]（FUN）+ endpoints[]（API）+ .registered.json（SYM/EPT/ITF） |
-| 数据 | data/<module-slug>.md | DATA-MOD-xxx | 对象/字段 |
+| 数据 | data/<module-slug>.md | DATA-MOD-xxx | 对象/字段（可选） |
 
 - 每个公开符号/端点卡片带**隐藏锚点** `<!-- @FUN-135 -->`（标题只写语义名；check 解析注释锚点统计登记，删除即 orphan）
-- 每份详档结构：`概览（四问）→ 符号索引表（ID｜符号｜类型｜说明，机器全量生成）→ 详细契约（按 模块级函数/类/HTTP 端点 分节）`
-- 每文件头部 frontmatter（工具维护）：`doc_id / type / source_commit / generated_at / inventory_hash / status`
-- AI-GEN 区 `<!-- AI-GEN:BEGIN --> … <!-- AI-GEN:END -->` 内可被重生成覆盖；区外是人工补充区，**永远保留**
+- **每页统一格式**：标题 + purpose + `**相关源文件**` 头 → AI 叙事节（`<!-- AI-FILL:… -->` 工单引导）→ AI-GEN 机器区 → 人工补充 → `## Sources`（机器汇总本页引用）
+- **AI 要填的叙事节位于 AI-GEN 区之外**：重跑 extract 只刷新机器区，已填语义永不被冲掉
+- 每文件头部 frontmatter（工具维护）：`doc_id / type / module_id / plan_slug / source_commit / generated_at / inventory_hash / status`
+- AI-GEN 区 `<!-- AI-GEN:BEGIN --> … <!-- AI-GEN:END -->` 内可被重生成覆盖；区外是 AI 填写 + 人工补充区，**永远保留**
 
 ## 执行流程
 
@@ -126,14 +135,25 @@ python3 <skill_dir>/scripts/dev_docs.py check --dir <目标项目>
 dev_docs.py inventory --dir <目标项目> [--out <子目录名=dev-docs>] [--exclude 额外排除]
                       [--project-type auto|catkin|generic]
                       # 文件全集 + 符号/端点 + 哈希基线（catkin 自动排除 build/devel/install/log）
-dev_docs.py extract  --dir <目标项目> --layer architecture|reference|data [--module MOD-id]
-                     # 生成/再生成指定层或模块的 draft 骨架（AI 填语义）
-dev_docs.py promote  --dir <目标项目> --file <draft文件>   # draft 转正（人工确认后）
+dev_docs.py plan     --dir <目标项目> [--write] [--force] [--exclude 模式]
+                     # 页面树（默认 dry-run 打印；--write 落盘 .devdocs-plan.json；重跑保留人工编辑）
+dev_docs.py brief    --dir <目标项目> --page <slug> [--json]
+                     # 页级填写工单：purpose / 章节 / 相关源文件 / 必覆盖锚点 / 撰写要求 / 自检清单
+dev_docs.py extract  --dir <目标项目> --layer index|architecture|usage|reference|data|all \
+                     [--module MOD-id] [--page <slug>]
+                     # 按页面树生成 draft 骨架；只刷新 AI-GEN 机器区，区外已填语义保留
+dev_docs.py promote  --dir <目标项目> --file <draft文件>
+                     # draft 转正（人工确认后；自动刷新 Sources 并更新页面进度）
 dev_docs.py register --dir <目标项目> --kind symbol|endpoint|interface --name <限定名> \
                      --src <相对项目根文件> [--line N] [--signature S] [--note N]
                      # 人工/低置信登记（语言指纹未覆盖时用）；必须真实 file:line，登记后不算 phantom
-dev_docs.py check    --dir <目标项目> [--drift]        # 对账：orphan/phantom/stale/登记腐化 + 文件覆盖 + 语义填充度；exit 0=干净
-dev_docs.py report   --dir <目标项目>                  # 重建 index.md + 刷新 baseline（含全文件哈希）
+dev_docs.py check    --dir <目标项目> [--drift] [--strict]
+                     # 对账：orphan/phantom/stale/登记腐化/缺页/缺节/引用不存在/行号异常 + 文件覆盖 + 语义填充度；
+                     # --strict 把 warn（AI-FILL 残留、文件未归属、行号异常）升为 ERROR；exit 0=干净
+dev_docs.py fixrefs  --dir <目标项目> [--write]
+                     # 修正页内 file:line 引用：指向空行/越界=明确错误可自动修；
+                     # 指向注释/import 行=疑似偏移只提示（避免误改正当引用）
+dev_docs.py report   --dir <目标项目>                  # 刷新 index.md 机器区 + baseline（含全文件哈希）
 ```
 
 ## 生成规范
@@ -155,9 +175,13 @@ dev_docs.py report   --dir <目标项目>                  # 重建 index.md + �
 5. 不得覆盖人工区（AI-GEN marker 外）与既有权威文档（摘录+链接）
 6. 不得在 check 未 ERROR=0 时宣告完成
 7. 不得跳层（先架构后接口）
+8. 不得跳过页面树与工单——先 `plan` 再 `brief` 再填写；`<!-- AI-FILL -->` 未清空不得宣告完成
+9. **不得凭记忆写行号**——叙述段引用源码必须用 `brief`/盘点输出的行号，写后运行 `fixrefs` 校验（指向空行/注释即为偏移）
 
 ## 完成条件（同时满足）
 
-- `check` 退出码 0（orphan/phantom/stale 全清或已显式 retired）
+- `check` 退出码 0（orphan/phantom/stale 全清或已显式 retired；无缺页 / 缺节 / 引用文件不存在）
+- `fixrefs` 无「空行/越界」类异常（`check --strict` 通过）
+- 交付前 `check --strict` 通过（AI-FILL 工单填尽、文件归属无遗漏、行号无异常）；分批交付的中间态可用普通模式
 - 每个 draft 经人工确认已 promote；人工区/权威链接已补 why
-- index.md 覆盖率摘要已更新；产物与触发变更同一次提交
+- index.md 覆盖率摘要已刷新；产物与触发变更同一次提交

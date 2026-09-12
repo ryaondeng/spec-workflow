@@ -52,6 +52,51 @@ docs/dev-docs/
 - 详档内部结构（固定）：`## 概览（四问）` → `## 符号索引`（表格：ID｜符号｜类型｜说明，机器全量生成）→ `## 详细契约`（按 `## 模块级函数` / `## 类：<名>` / `## HTTP 端点` 分节）。
 - `MOD-000` 为仓库根自身代码模块（如根目录脚本/CI），可空但应保留占位或 retired。
 
+## 页面树（.devdocs-plan.json，v1.4，plan 命令维护）
+
+```json
+{"version": 1, "source": "semantic-map",
+ "pages": [{"slug": "reference/pico-providers", "type": "reference", "module_id": "MOD-004",
+   "title": "模型后端适配层", "parent": "index",
+   "purpose": "四类客户端如何统一成 complete()，怎么加新后端",
+   "sections": ["概览", "组件与协作", "使用指南", "对外接口面", "符号索引", "详细契约"],
+   "source_files": ["pico/providers/clients.py"], "status": "generated"}]}
+```
+
+- 层级：`index`（根）→ `architecture` / `usage` / `reference/<slug>`；`data` 默认不生成
+- 字段语义：`purpose` = 该页工单要回答什么（brief 输出）；`sections` = 结构门禁要求的必需章节；
+  `status`：`planned`（未生成）→ `generated`（已生成 draft/正式文件，语义未填尽）→ `filled`（AI-FILL 清空）
+- 人工可编辑：重跑 `plan` 只新增缺失页，已有页的 title/purpose/parent/sections/status **不被覆盖**（`--force` 除外）
+- check 依据：plan 应有页是否缺失（draft 在 = 中间态不报）、正式页是否缺节
+
+## 每页统一格式（v1.4）
+
+```markdown
+# <title>
+> <purpose>
+**相关源文件**：<机器按 plan.source_files 渲染>
+（AI 叙事节：概览/组件与协作/使用指南/…，由 <!-- AI-FILL:… --> 工单引导，位于 AI-GEN 区外）
+<!-- AI-GEN:BEGIN --> 机器区（符号索引/详细契约/文档树/覆盖率） <!-- AI-GEN:END -->
+## 人工补充（机器不覆盖）
+## Sources
+<!-- SOURCES:AUTO -->（extract/promote 时替换为本页 file:line 引用清单）
+```
+
+- **AI 叙事节必须在 AI-GEN 区外**：重生成只刷新机器区，已填语义永不被冲掉
+- `<!-- AI-FILL:ID 要求 -->` 为章节级工单：`check` 统计残留（默认 warn，`--strict` 为 ERROR）
+- Sources 由机器生成，勿手写；页内 `file:line` 引用会被 check 校验（引用的文件必须在项目文件全集内）
+
+## 引用与行号（v1.4.1）
+
+- 页内 `路径:行号` 引用属于**可校验声明**，`check` 会逐条核：
+  - `ref_file_missing`：文件不在项目文件全集内 → **ERROR**（编造拦截）
+  - `ref_line_suspect`：行号指向**空行 / 注释行 / 越界** → WARN（`--strict` 为 ERROR）；
+    指向 `import` 行且上下文未在讲"依赖/导入" → 同样报疑似
+- `fixrefs [--write]`：空行/越界类按"最近的 def/class/赋值行"自动修正；
+  注释/import 类只提示（需人工或 AI 复核），避免把正当引用改坏
+- 纪律：**行号来自机器输出**（`brief` 的必覆盖锚点、盘点卡片、`Sources`），不凭记忆手写；
+  写完一批内容跑一次 `fixrefs` 即可机制化清零
+
 ## 3. frontmatter（每文件头部，机器维护）
 
 ```yaml
