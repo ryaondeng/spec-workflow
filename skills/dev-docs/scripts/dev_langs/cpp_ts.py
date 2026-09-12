@@ -8,10 +8,21 @@
 - field_declaration：仅头文件（.h/.hpp/.hh）中的方法声明 → kind=method（类接口面）
 - 匿名命名空间整棵跳过；宏调用只进 scan_calls，不产生符号（防宏爆炸）
 - public 一律 True（C++ 无下划线约定）；visibility 暂不判定（二期）
+- ROS 领域扩展：advertise/subscribe/advertiseService/serviceClient/ros::init →
+  话题与服务的"绑定条目"（TOP-/SVC-）与节点入口（NDE-），进 inventory.interfaces
 """
+import re
+
 from .base import LanguageAdapter, get_parser, node_text, walk
 
 _HEADER_EXTS = (".h", ".hpp", ".hh")
+
+_ROS_TOPIC_PUB = re.compile(r"advertise\s*<\s*([^>(]+?)\s*>\s*\(\s*\"([^\"]+)\"")
+_ROS_TOPIC_SUB = re.compile(r"subscribe\s*(?:<\s*([^>(]+?)\s*>\s*)?\(\s*\"([^\"]+)\"")
+_ROS_SVC_SERVER = re.compile(r"advertiseService\s*\(\s*\"([^\"]+)\"")
+_ROS_SVC_CLIENT = re.compile(r"serviceClient\s*<\s*([^>(]+?)\s*>\s*\(\s*\"([^\"]+)\"")
+_ROS_NODE = re.compile(r"ros::init\s*\(([^;]*)\)")
+_ROS_GUARD = re.compile(r"ros/ros\.h|ros::|serviceClient|advertiseService")
 
 
 def _decl_name(data, fn_node):
@@ -45,6 +56,45 @@ class CppTreeSitterAdapter(LanguageAdapter):
     lang = "cpp"
     exts = (".cpp", ".cc", ".cxx", ".hpp", ".hh", ".h")
     grammar = "cpp"
+
+    def _scan_ros(self, data, text, rel_path, module_id, counters):
+        """ROS 领域形态 → 话题/服务绑定条目（TOP-/SVC-）与节点入口（NDE-）。
+        仅当文件含 ROS 痕迹时启用；话题名为变量（如来自 yaml 配置）的场景不抓取（如实缺失）。"""
+        if not _ROS_GUARD.search(text):
+            return []
+
+        def line_of(m):
+            return text[:m.start()].count("\n") + 1
+
+        def add(kind, name, m, msg=None, srv=None, role=None):
+            item = {
+                "id": self._iface_id(counters, kind), "kind": kind, "module": module_id,
+                "name": name, "file": rel_path, "line": line_of(m),
+                "extractor": "tree-sitter", "confidence": "reliable",
+            }
+            if msg:
+                item["msg"] = msg.strip()
+            if srv:
+                item["srv"] = srv.strip()
+            if role:
+                item["role"] = role
+            out.append(item)
+
+        out = []
+        for m in _ROS_TOPIC_PUB.finditer(text):
+            add("topic", m.group(2), m, msg=m.group(1), role="pub")
+        for m in _ROS_TOPIC_SUB.finditer(text):
+            add("topic", m.group(2), m, msg=m.group(1), role="sub")
+        for m in _ROS_SVC_SERVER.finditer(text):
+            add("service", m.group(1), m, role="server")
+        for m in _ROS_SVC_CLIENT.finditer(text):
+            add("service", m.group(2), m, srv=m.group(1), role="client")
+        for m in _ROS_NODE.finditer(text):
+            quotes = re.findall(r'"([^"]+)"', m.group(1))
+            if quotes:
+                add("node", quotes[-1], m)     # ros::init 第三个字符串参数 = 节点名
+        out.sort(key=lambda i: (i["file"], i["line"]))
+        return out
 
     def _scan(self, data, rel_path, module_id, counters):
         root = get_parser(self.grammar).parse(data).root_node
@@ -122,7 +172,8 @@ class CppTreeSitterAdapter(LanguageAdapter):
                 visit(ch)
 
         visit(root)
-        return symbols, [], [], notes
+        interfaces = self._scan_ros(data, node_text(data, root), rel_path, module_id, counters)
+        return symbols, [], interfaces, notes
 
     def scan_calls(self, data):
         root = get_parser(self.grammar).parse(data).root_node

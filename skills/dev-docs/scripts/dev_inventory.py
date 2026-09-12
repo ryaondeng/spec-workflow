@@ -203,12 +203,19 @@ def _catkin_packages(root, extra):
         dirnames[:] = keep
         if "package.xml" in filenames:
             rel = _rel(root, dirpath)
-            name = None
+            name, ext_deps = None, set()
             try:
-                name = ET.parse(os.path.join(dirpath, "package.xml")).findtext("name")
+                ptree = ET.parse(os.path.join(dirpath, "package.xml"))
+                name = ptree.findtext("name")
+                for dep in ptree.iter():
+                    if dep.tag in ("depend", "build_depend", "exec_depend", "run_depend",
+                                   "build_export_depend", "test_depend", "doc_depend"):
+                        if dep.text and dep.text.strip():
+                            ext_deps.add(dep.text.strip())
             except (ET.ParseError, OSError):
                 name = None
-            pkgs.append({"path": rel, "name": (name or os.path.basename(rel)).strip()})
+            pkgs.append({"path": rel, "name": (name or os.path.basename(rel)).strip(),
+                         "external_deps": ext_deps})
     return sorted(pkgs, key=lambda x: x["path"])
 
 
@@ -279,7 +286,9 @@ def build_modules(root, extra_exclude, project_type=None):
 
 
 def _modules_from_pkgs(pkgs, root, extra):
-    """catkin 包 -> 模块（一包一模块；包内子目录不拆分；包外代码文件归 MOD-000 root）。"""
+    """catkin 包 -> 模块（一包一模块；包内子目录不拆分；包外代码文件归 MOD-000 root）。
+    外部依赖 = package.xml 的 depend 系标签 ∪ 包内 CMakeLists.txt 的 find_package。"""
+    import re as _re
     code_files = iter_code_files(root, extra)
     rels = [_rel(root, f) for f in code_files]
     modules = []
@@ -297,9 +306,20 @@ def _modules_from_pkgs(pkgs, root, extra):
                                              if "/" not in r]), "kind": "root"})
     for p in pkgs:
         files = [f for f, r in zip(code_files, rels) if r.startswith(p["path"] + "/")]
+        ext = set(p.get("external_deps") or [])
+        cmake = os.path.join(root, p["path"], "CMakeLists.txt")
+        if os.path.isfile(cmake):
+            try:
+                with open(cmake, encoding="utf-8", errors="replace") as fh:
+                    for m in _re.finditer(r"(?m)^[ \t]*find_package\s*\(\s*([A-Za-z0-9_]+)",
+                                          fh.read()):
+                        ext.add(m.group(1))
+            except OSError:
+                pass
         modules.append({
             "id": "MOD-%03d" % idx, "name": p["name"], "path": p["path"],
             "langs": _dir_langs(files), "kind": "package", "deps": [],
+            "external_deps": sorted(ext),
         })
         idx += 1
     if leftovers:
@@ -384,7 +404,9 @@ def build_inventory(root, extra_exclude=None, project_type="auto"):
     interfaces = []
     code_file_hashes = {}
     confidence_notes = []
-    counters = {"fun": 0, "cls": 0, "api": 0, "msg": 0, "srv": 0}
+    counters = {"fun": 0, "cls": 0, "api": 0, "msg": 0, "srv": 0, "top": 0, "svc": 0, "nde": 0}
+    file_mod = {}          # rel -> module id（含跳过符号的文件，供 include 依赖映射）
+    include_records = []   # (rel, [include 字面量]) —— C++/JS 等适配器提供
 
     for fp in iter_code_files(root, extra):
         ext = os.path.splitext(fp)[1].lower()
@@ -393,6 +415,8 @@ def build_inventory(root, extra_exclude=None, project_type="auto"):
         if adapter is None:
             continue
         rel = _rel(root, fp)
+        mid = module_of(modules, root, fp)
+        file_mod[rel] = mid
         # 测试文件不生成文档符号，只入测试索引（沿用 python 口径）
         base = os.path.basename(fp)
         if lang == "python" and (base.startswith("test_") or rel.startswith("tests/")
@@ -405,8 +429,9 @@ def build_inventory(root, extra_exclude=None, project_type="auto"):
         except OSError:
             continue
         code_file_hashes[rel] = sha256_file(fp)
-        mid = module_of(modules, root, fp)
         syms, eps, ifaces, notes = adapter.scan(data, rel, mid, counters)
+        if hasattr(adapter, "scan_deps"):
+            include_records.append((rel, adapter.scan_deps(data)))
         symbols.extend(syms)
         endpoints.extend(eps)
         interfaces.extend(ifaces)
@@ -415,6 +440,25 @@ def build_inventory(root, extra_exclude=None, project_type="auto"):
                                      "note": n.get("note") if isinstance(n, dict) else str(n)})
     # 模块依赖（python import 启发）
     _mod_deps(modules, root, extra)
+
+    # include 依赖映射：C++ 本地头（"pkg/path.h"）→ 项目内文件 → 目标模块
+    if include_records:
+        include_deps = {}
+        for rel, incs in include_records:
+            src_mod = file_mod.get(rel)
+            if not src_mod:
+                continue
+            for inc in incs:
+                inc = inc.strip("<>\"'").strip()
+                if not inc:
+                    continue
+                for f_rel, f_mod in file_mod.items():
+                    if f_mod != src_mod and (f_rel == inc or f_rel.endswith("/" + inc)):
+                        include_deps.setdefault(src_mod, set()).add(f_mod)
+        for m in modules:
+            inc_deps = include_deps.get(m["id"])
+            if inc_deps:
+                m["deps"] = sorted((set(m.get("deps") or []) | inc_deps) - {m["id"]})
 
     tests = collect_tests(root, extra)
 

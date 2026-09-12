@@ -136,9 +136,15 @@ class LanguageAdapter:
 
     @staticmethod
     def _iface_id(counters, kind):
-        key = "msg" if kind == "msg" else "srv"
+        # kind -> (计数器键, ID 前缀)：msg/srv=接口定义；topic/service=ROS 话题/服务绑定；
+        # node=ROS 节点入口
+        key, prefix = {
+            "msg": ("msg", "MSG"), "srv": ("srv", "SRV"),
+            "topic": ("top", "TOP"), "service": ("svc", "SVC"),
+            "node": ("nde", "NDE"),
+        }.get(kind, ("msg", "MSG"))
         counters[key] += 1
-        return ("%s-%%03d" % key.upper()) % counters[key]
+        return "%s-%%03d" % prefix % counters[key]
 
     # ---- 公共 schema 构造 ----
 

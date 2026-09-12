@@ -265,12 +265,25 @@ def _iface_field(f):
 
 
 def _iface_card(i):
-    """ROS msg/srv 卡片：标题写语义名 + 隐藏 ID 锚点（纳入对账）。"""
+    """ROS 接口/绑定卡片：标题写语义名 + 隐藏 ID 锚点（纳入对账）。
+    kind=msg/srv 为接口定义（字段/请求响应）；topic/service 为绑定条目（pub/sub/server/client）；
+    node 为节点入口。"""
     if i.get("kind") == "srv":
         req = "、".join(_iface_field(f) for f in i.get("request") or []) or "—"
         rsp = "、".join(_iface_field(f) for f in i.get("response") or []) or "—"
         detail = "- 请求：%s\n- 响应：%s（file %s:%s, evidence: 事实）<!-- @%s -->" % (
             req, rsp, i["file"], i.get("line", 0), i["id"])
+    elif i.get("kind") == "topic":
+        detail = "- %s 消息 `%s`（file %s:%s, evidence: 事实）<!-- @%s -->" % (
+            {"pub": "发布", "sub": "订阅"}.get(i.get("role"), i.get("role", "?")),
+            i.get("msg") or "（动态：运行时确定）", i["file"], i.get("line", 0), i["id"])
+    elif i.get("kind") == "service":
+        detail = "- %s 服务 `%s`（file %s:%s, evidence: 事实）<!-- @%s -->" % (
+            {"server": "提供服务", "client": "调用"}.get(i.get("role"), i.get("role", "?")),
+            i.get("srv") or "（类型待查）", i["file"], i.get("line", 0), i["id"])
+    elif i.get("kind") == "node":
+        detail = "- 节点名：`%s`（file %s:%s, evidence: 事实）<!-- @%s -->" % (
+            i["name"], i["file"], i.get("line", 0), i["id"])
     else:
         fields = "、".join(_iface_field(f) for f in i.get("fields") or []) or "—"
         detail = "- 字段：%s（file %s:%s, evidence: 事实）<!-- @%s -->" % (
@@ -282,6 +295,16 @@ def _iface_card(i):
             % (title, detail, SYM_TODO))
 
 
+def _deps_display(m):
+    """模块依赖展示：内部 MOD-id + 外部生态依赖（external_deps）。"""
+    parts = []
+    if m.get("deps"):
+        parts.append("内部: " + ", ".join(m["deps"]))
+    if m.get("external_deps"):
+        parts.append("外部: " + ", ".join(m["external_deps"]))
+    return "；".join(parts) or "（无内部依赖或待确认）"
+
+
 def reference_tpl_values(inv_data, m):
     return {
         "MOD-id": m["id"], "module_name": m["name"], "path": m["path"],
@@ -291,7 +314,7 @@ def reference_tpl_values(inv_data, m):
         "generated_at": now_iso(),
         "inventory_hash": inv_data.get("_inventory_hash") or "",
         "status": "draft",
-        "deps": ",".join(m.get("deps") or []) or "（无内部依赖或待确认）",
+        "deps": _deps_display(m),
         "index_rows": "\n".join(ref_index_rows(inv_data, m["id"])) or "| — | （本模块无公开符号） | — | — |",
         "detail_rows": ref_detail_sections(inv_data, m["id"]),
     }
@@ -308,7 +331,7 @@ def arch_module_rows(inv_data, out=None):
                 resp = sm["responsibility"]
         rows.append("| %s | %s | %s | %s | %s |"
                     % (m["id"], m["name"], m["path"], resp,
-                       ",".join(m.get("deps") or []) or "—"))
+                       _deps_display(m)))
     return "\n".join(rows) if rows else "| — | — | — | — | — |"
 
 
@@ -660,13 +683,23 @@ def format_source_files(files, limit=12):
     return s
 
 
+def resolve_ref(p, all_files):
+    """引用路径解析：精确命中 / 唯一后缀命中（如 `M300Control.h:99` 短写）→ 全路径；
+    多义或不存在 → None（调用方按缺/歧义分别处置）。"""
+    p = p.replace("\\", "/").lstrip("./")
+    if p in all_files:
+        return p
+    matches = [f for f in all_files if f.endswith("/" + p)]
+    return matches[0] if len(matches) == 1 else None
+
+
 def collect_page_refs(text, inv_data):
-    """抽取页内 file:line 引用（仅保留项目文件全集内的），去重排序 → Sources 列表。"""
+    """抽取页内 file:line 引用（解析为项目文件全集路径，含唯一短名），去重排序 → Sources 列表。"""
     all_files = {f["path"] for f in inv_data.get("files", [])}
     hits = {}
     for path, line in REF_RE.findall(text):
-        p = path.replace("\\", "/").lstrip("./")
-        if p in all_files:
+        p = resolve_ref(path, all_files)
+        if p:
             hits.setdefault(p, set()).add(int(line))
     rows = []
     for p in sorted(hits):
@@ -1187,7 +1220,7 @@ def page_structure_errors(inv_data, out, plan):
 
 
 def page_ref_errors(inv_data, out):
-    """页内 file:line 引用指向项目文件全集之外 → ERROR（防编造）。"""
+    """页内 file:line 引用解析不到项目文件（不存在或短名多义）→ ERROR（防编造）。"""
     all_files = {f["path"] for f in inv_data.get("files") or []}
     errs = []
     if not all_files:
@@ -1196,7 +1229,7 @@ def page_ref_errors(inv_data, out):
         rel = os.path.relpath(fp, out).replace("\\", "/")
         for path, line in REF_RE.findall(read(fp)):
             p = path.replace("\\", "/").lstrip("./")
-            if p not in all_files:
+            if resolve_ref(p, all_files) is None:
                 errs.append("%s -> %s:%s" % (rel, p, line))
     return errs
 
