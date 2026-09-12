@@ -743,6 +743,9 @@ def _merge_doc(old_text, new_text, keep_status=False):
     pre = _sync_source_line(pre, new_pre)
     post = _sync_source_line(post, new_post)
     inside = new_inside if new_inside is not None else (inside_old or "")
+    # 符号卡片语义（机器区内的"用途/参数/返回/错误"已填内容）随机器区刷新而保留
+    if new_inside is not None and inside_old:
+        inside = _preserve_card_semantics(inside_old, new_inside)
     return compose(fm, pre, inside, post)
 
 
@@ -752,6 +755,42 @@ def _sync_source_line(old, new):
     if not m or not _SRC_LINE_RE.search(old or ""):
         return old
     return _SRC_LINE_RE.sub(lambda _m: m.group(0), old, count=1)
+
+
+_SEM_LINE_PREFIX = "- 用途 / 参数 / 返回 / 错误："
+
+
+def _preserve_card_semantics(old_inside, new_inside):
+    """保留已填的符号卡片语义（v1.4.1）：卡片位于 AI-GEN 机器区内，
+    机器区整体刷新会把已填的「用途 / 参数 / 返回 / 错误」冲掉——这里按锚点 ID
+    把旧文本里**非 TODO** 的语义行回填到新文本，避免重生成丢语义。"""
+    if not old_inside or not new_inside:
+        return new_inside
+    kept, cur = {}, None
+    for ln in old_inside.split("\n"):
+        m = ANCHOR.search(ln)
+        if m:
+            cur = m.group(1)
+            continue
+        if cur and ln.startswith(_SEM_LINE_PREFIX):
+            if MARK not in ln:
+                kept[cur] = ln
+            cur = None
+    if not kept:
+        return new_inside
+    out, cur = [], None
+    for ln in new_inside.split("\n"):
+        m = ANCHOR.search(ln)
+        if m:
+            cur = m.group(1)
+            out.append(ln)
+            continue
+        if cur and ln.startswith(_SEM_LINE_PREFIX) and cur in kept:
+            out.append(kept[cur])
+            cur = None
+            continue
+        out.append(ln)
+    return "\n".join(out)
 
 
 def _regen_or_new(out, rel_path, new_text):

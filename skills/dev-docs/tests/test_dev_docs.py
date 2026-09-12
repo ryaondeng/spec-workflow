@@ -609,6 +609,24 @@ class FixRefsAndPurity(TmpCase):
         vals = dev_docs.page_values(data, out, page)
         self.assertNotIn("README.md", vals["source_files"])
 
+    def test_card_semantics_preserved_on_regen(self):
+        """机器区刷新时，卡片里已填的「用途/参数/返回/错误」不得被冲掉。"""
+        out, data = self._init()
+        dev_docs.cmd_plan(self.tmp, out, write=True)
+        dev_docs.extract_layer(data, self.tmp, out, "all")
+        page = [p for p in dev_docs.load_plan(out)["pages"] if p["type"] == "reference"][0]
+        draft = os.path.join(out, page["slug"] + ".md.draft")
+        t = open(draft, encoding="utf-8").read()
+        self.assertIn("<!-- TODO AI 依源码填写（evidence: 推断/假设需注明） -->", t)
+        t = t.replace("<!-- TODO AI 依源码填写（evidence: 推断/假设需注明） -->",
+                      "已完成语义（evidence: 事实——src/app.py:1）", 1)
+        with open(draft, "w", encoding="utf-8", newline="\n") as f:
+            f.write(t)
+        dev_docs.cmd_promote(out, draft, data)
+        dev_docs.extract_layer(data, self.tmp, out, "all")      # 重新生成机器区
+        again = open(draft, encoding="utf-8").read()
+        self.assertIn("已完成语义（evidence: 事实——src/app.py:1）", again)
+
     def test_sources_not_truncated(self):
         out, data = self._init()
         refs = " ".join("`src/app.py:%d`" % i for i in range(1, 26))
