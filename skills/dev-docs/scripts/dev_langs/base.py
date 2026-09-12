@@ -79,6 +79,22 @@ def walk(node):
             stack.append(child)
 
 
+# 测试文件判定（跨语言统一口径：只入测试索引，不生成文档符号/卡片）
+_TEST_DIR_RE = re.compile(r"(^|/)(tests?|__tests__|spec)(/|$)", re.I)
+_TEST_STEM = re.compile(r"^(tests?|test[_.\-].*|.*[_.\-]test)$", re.I)
+
+
+def is_test_file(rel_path):
+    """是否为测试文件：位于 tests//test//__tests__//spec/ 目录，或文件名形如
+    `test.cpp` / `test_foo.py` / `foo_test.cpp` / `tests.py`（跨语言统一）。"""
+    rel = (rel_path or "").replace("\\", "/")
+    base = rel.rsplit("/", 1)[-1]
+    if _TEST_DIR_RE.search(rel):
+        return True
+    stem = base.rsplit(".", 1)[0] if "." in base else base
+    return bool(_TEST_STEM.match(stem))
+
+
 def sig_from_lines(lines, row0):
     """从源码行构造签名文本（def 起始行至括号闭合；与原 ast 版算法逐行等价）。"""
     start = row0

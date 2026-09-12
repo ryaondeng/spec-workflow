@@ -247,6 +247,44 @@ class CatkinModules(unittest.TestCase):
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+class TestFileRule(unittest.TestCase):
+    """测试文件跨语言统一口径：只入测试索引，不生成符号卡片。"""
+
+    def test_is_test_file(self):
+        from dev_langs import is_test_file
+        yes = ["test.cpp", "src/ncu/src/test.cpp", "test_foo.py", "foo_test.cpp",
+               "tests/a.py", "test/b.js", "pkg/__tests__/x.ts", "spec/y.rb", "tests.py"]
+        no = ["M300Control.cpp", "ncu_node.cpp", "detect.py", "src/tests_helper.py",
+              "latest.cpp", "attest.py", "image2rtsp.h"]
+        for p in yes:
+            self.assertTrue(is_test_file(p), p)
+        for p in no:
+            self.assertFalse(is_test_file(p), p)
+
+    def test_cpp_test_file_indexed_not_documented(self):
+        import shutil
+        import tempfile
+        tmp = tempfile.mkdtemp(prefix="devlangstest_")
+        try:
+            files = {
+                "src/p/package.xml": "<package><name>p</name></package>",
+                "src/p/src/main.cpp": "int app() { return 1; }\n",
+                "src/p/src/test.cpp": "int main() { return 0; }\n",
+            }
+            for rel, content in files.items():
+                fp = os.path.join(tmp, rel)
+                os.makedirs(os.path.dirname(fp), exist_ok=True)
+                with open(fp, "w", encoding="utf-8", newline="\n") as fh:
+                    fh.write(content)
+            data = inv.build_inventory(tmp, project_type="catkin")
+            names = {s["qname"] for s in data["symbols"]}
+            self.assertIn("app", names)
+            self.assertNotIn("main", names)                      # test.cpp 不产符号
+            self.assertEqual([t["file"] for t in data["tests"]], ["src/p/src/test.cpp"])
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 class DeterminismAndRecon(unittest.TestCase):
     APP = {
         "src/a.py": "def f():\n    pass\n",

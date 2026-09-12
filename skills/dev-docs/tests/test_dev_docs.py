@@ -530,11 +530,15 @@ class PlanAndBrief(TmpCase):
         for p in dev_docs.load_plan(out)["pages"]:
             dev_docs.cmd_promote(out, os.path.join(out, p["slug"] + ".md.draft"), data)
         self.assertEqual(dev_docs.cmd_check(data, out, False, root, strict=True), 1)
-        # 卡片语义填尽 + 清 AI-FILL 后同一份产物应转绿
+        # 仅清 AI-FILL（语义仍空）——语义门禁须独立生效，不被 AI-FILL 掩盖
         for fp in dev_docs.list_md(out):
-            text = open(fp, encoding="utf-8").read().replace(
-                "<!-- TODO AI 依源码填写（用途 / 参数 / 返回 / 错误；缺失写 unknown） -->", "已填语义")
-            text = re.sub(r"<!-- AI-FILL:[^\n]*-->\n", "", text)
+            text = re.sub(r"<!-- AI-FILL:[^\n]*-->\n", "", open(fp, encoding="utf-8").read())
+            with open(fp, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(text)
+        self.assertEqual(dev_docs.cmd_check(data, out, False, root, strict=True), 1)
+        # 卡片语义 + 章节占位全部填尽后同一份产物应转绿
+        for fp in dev_docs.list_md(out):
+            text = re.sub(r"<!-- TODO AI[^\n]*-->", "已填语义", open(fp, encoding="utf-8").read())
             with open(fp, "w", encoding="utf-8", newline="\n") as fh:
                 fh.write(text)
         self.assertEqual(dev_docs.cmd_check(data, out, False, root, strict=True), 0)

@@ -17,7 +17,7 @@ import sys
 import xml.etree.ElementTree as ET
 from collections import OrderedDict
 
-from dev_langs import EXT_LANG, get_adapter  # noqa: F401  （EXT_LANG 对外兼容导出）
+from dev_langs import EXT_LANG, get_adapter, is_test_file  # noqa: F401  （EXT_LANG 对外兼容导出）
 
 # ---------------- 常量 ----------------
 
@@ -360,27 +360,27 @@ def module_of(modules, root, filepath):
 # ---------------- 测试索引 ----------------
 
 def collect_tests(root, extra_exclude):
-    """测试文件与用例。返回 [{file, cases:[name,...]}]。仅对 python 精确；其它启发式。"""
+    """测试文件与用例。返回 [{file, lang, cases:[name,...]}]。
+    文件判定跨语言统一（is_test_file）；用例名仅 python 用 ast 精确提取，其它为 []（未知）。"""
     tests = []
     for fp in iter_code_files(root, extra_exclude):
         ext = os.path.splitext(fp)[1].lower()
         rel = _rel(root, fp)
-        is_test = False
+        if not is_test_file(rel):
+            continue
+        lang = EXT_LANG.get(ext)
+        cases = []
         if ext == ".py":
-            base = os.path.basename(fp)
-            is_test = (base.startswith("test_") or base.endswith("_test.py")
-                       or "/test_" in rel or rel.startswith("tests/"))
-            if is_test:
-                cases = []
-                try:
-                    with open(fp, encoding="utf-8", errors="replace") as fh:
-                        tree = ast.parse(fh.read())
-                    for node in ast.walk(tree):
-                        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test_"):
-                            cases.append(node.name)
-                except (SyntaxError, OSError):
-                    pass
-                tests.append({"file": rel, "lang": "python", "cases": cases})
+            try:
+                with open(fp, encoding="utf-8", errors="replace") as fh:
+                    tree = ast.parse(fh.read())
+                for node in ast.walk(tree):
+                    if (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                            and node.name.startswith("test_")):
+                        cases.append(node.name)
+            except (SyntaxError, OSError):
+                pass
+        tests.append({"file": rel, "lang": lang or "", "cases": cases})
     return tests
 
 
@@ -410,17 +410,14 @@ def build_inventory(root, extra_exclude=None, project_type="auto"):
 
     for fp in iter_code_files(root, extra):
         ext = os.path.splitext(fp)[1].lower()
-        lang = EXT_LANG.get(ext)
         adapter = get_adapter(ext)
         if adapter is None:
             continue
         rel = _rel(root, fp)
         mid = module_of(modules, root, fp)
         file_mod[rel] = mid
-        # 测试文件不生成文档符号，只入测试索引（沿用 python 口径）
-        base = os.path.basename(fp)
-        if lang == "python" and (base.startswith("test_") or rel.startswith("tests/")
-                                 or base.endswith("_test.py")):
+        # 测试文件不生成文档符号，只入测试索引（v1.5：跨语言统一口径）
+        if is_test_file(rel):
             code_file_hashes[rel] = sha256_file(fp)
             continue
         try:

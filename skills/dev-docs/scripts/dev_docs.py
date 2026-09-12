@@ -824,7 +824,9 @@ def _sync_source_line(old, new):
     return _SRC_LINE_RE.sub(lambda _m: m.group(0), old, count=1)
 
 
-_SEM_LINE_PREFIX = "- 用途 / 参数 / 返回 / 错误："
+# 卡片语义行前缀：符号卡（用途/参数/返回/错误）与接口卡（用途/语义）两类
+# （漏掉接口卡前缀会导致重生成时 msg/srv/topic/service/node 卡片语义被冲掉）
+_SEM_LINE_PREFIX = ("- 用途 / 参数 / 返回 / 错误：", "- 用途 / 语义：")
 
 
 def _preserve_card_semantics(old_inside, new_inside):
@@ -1489,8 +1491,13 @@ def cmd_check(inv_data, out, drift, root=None, strict=False):
             ("ai_fill_left(AI 工单未填尽)", rep["ai_fill"], "填写对应章节后删除 <!-- AI-FILL --> 块"),
             # v1.5：交付口径 = 一次填尽（不再以"分批交付"留待办）
             ("semantic_todo_left(符号/接口卡片语义未填尽)",
-             ["%s（%d 处）" % (k, v) for k, v in sorted(per.items())], "按锚点补齐「用途/参数/返回/错误」"),
+             ["%s（%d 处）" % (k, v) for k, v in sorted(per.items()) if v],
+             "按锚点补齐「用途/参数/返回/错误」"),
         )
+    if strict and unf:
+        # v1.5 交付口径：卡片语义未填尽 = ERROR（此前仅打印、未计入失败，门禁实际失效）
+        errors = errors + ["semantic_todo_left(%s %d 处)" % (k, v)
+                           for k, v in sorted(per.items()) if v]
     for label, items, fix in groups:
         if items:
             print("[%s] %d 项（%s）:" % (label, len(items), fix))

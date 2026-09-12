@@ -10,5 +10,5 @@
 适配器模式：每语言一个 LanguageAdapter 子类（base.py），tree-sitter 为运行时
 硬依赖；ROS .msg/.srv 无官方 grammar，用文本解析适配器（同接口，extractor=text）。
 """
-from .base import LanguageAdapter, get_parser  # noqa: F401
+from .base import LanguageAdapter, get_parser, is_test_file  # noqa: F401
 from .registry import CODE_EXTS, EXT_LANG, adapters, available_extractors, get_adapter  # noqa: F401
