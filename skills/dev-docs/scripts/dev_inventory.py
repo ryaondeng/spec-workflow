@@ -56,8 +56,11 @@ def eprint(*a, **k):
 
 def run_git(root, args):
     try:
+        # 显式 UTF-8 + replace：Windows 中文环境 locale 为 GBK，git 输出含非 ASCII
+        # 路径时 text=True 会按 locale 解码失败（异常被吞导致静默降级为非 git）。
         out = subprocess.run(
-            ["git", "-C", root] + args, capture_output=True, text=True, timeout=10
+            ["git", "-C", root] + args,
+            capture_output=True, encoding="utf-8", errors="replace", timeout=10
         )
         if out.returncode == 0:
             return out.stdout.strip()

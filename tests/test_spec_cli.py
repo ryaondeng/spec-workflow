@@ -130,6 +130,14 @@ class EngineCase(unittest.TestCase):
         m = re.match(r"^\d{12}-user-auth$", self.f)
         self.assertIsNotNone(m, "目录名应为 <yyyymmddhhmm>-user-auth，实际: %s" % self.f)
 
+    def test_generated_artifacts_use_lf(self):
+        """跨平台一致性：生成的产物固定 LF，不随 OS 变成 CRLF"""
+        for name in ("00-index.md", "01-requirements.md", "02-design.md", "08-commit.md"):
+            self.assertNotIn(b"\r", (self.fd / name).read_bytes(),
+                             "%s 应为 LF 换行" % name)
+        self.assertNotIn(b"\r", (self.sess / "state.json").read_bytes(),
+                         "state.json 应为 LF 换行")
+
     def test_empty_template_gate(self):
         """AC-05: 空模板（带标记）收口被拦，状态不变"""
         rc, out = self.complete("requirements")

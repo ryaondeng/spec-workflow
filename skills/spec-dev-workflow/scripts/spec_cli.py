@@ -75,6 +75,16 @@ def err(msg: str, code: int = 1) -> "NoReturn":
     sys.exit(code)
 
 
+def write_text_lf(path: Path, text: str) -> None:
+    """跨平台固定 LF 写出：避免 Windows 文本模式把 \\n 写成 \\r\\n，保证 spec
+    产物在任意平台字节一致。Python 3.7+ 通用（Path.write_text 的 newline 参数需
+    3.10+，故此处用 open）。"""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(text)
+
+
 def feature_docs_dir(spec_root: str, feature: str) -> Path:
     """文档目录：<spec根>/<feature>（spec 产物文档，人读、可提交）"""
     return Path(spec_root) / feature
@@ -187,7 +197,7 @@ def rule_no_placeholder(spec_root: Path, fd: Path, stage: dict):
         f = fd / a
         if not f.is_file():
             continue
-        text = f.read_text(encoding="utf-8")
+        text = f.read_text(encoding="utf-8", errors="replace")
         for ph in SYSTEM_PLACEHOLDERS:
             if ph in text:
                 hit.append("%s:%s" % (a, ph))
@@ -198,7 +208,7 @@ def rule_no_fill_marker(spec_root: Path, fd: Path, stage: dict):
     hit = []
     for a in stage.get("artifacts", []):
         f = fd / a
-        if f.is_file() and FILL_MARKER in f.read_text(encoding="utf-8"):
+        if f.is_file() and FILL_MARKER in f.read_text(encoding="utf-8", errors="replace"):
             hit.append(a)
     return (not hit, "未填写（含模板标记）: " + ", ".join(hit) if hit else "模板标记已清除")
 
@@ -209,7 +219,7 @@ def _task_lines(fd: Path) -> list:
     if not f.is_file():
         return []
     result = []
-    for line in f.read_text(encoding="utf-8").splitlines():
+    for line in f.read_text(encoding="utf-8", errors="replace").splitlines():
         m = re.match(r"^\s*-\s*\[(.)\]\s*T?\d*", line)
         if m:
             result.append((m.group(1), line.strip()))
@@ -265,8 +275,8 @@ def load_state(sess: Path) -> dict:
 
 def save_state(sess: Path, state: dict) -> None:
     state["updated_at"] = now_str()
-    (sess / "state.json").write_text(
-        json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_text_lf(sess / "state.json",
+                  json.dumps(state, ensure_ascii=False, indent=2) + "\n")
 
 
 def render_index(fd: Path, state: dict, pipeline: dict) -> str:
@@ -316,7 +326,7 @@ def render_index(fd: Path, state: dict, pipeline: dict) -> str:
 
 
 def write_index(fd: Path, state: dict, pipeline: dict) -> None:
-    (fd / "00-index.md").write_text(render_index(fd, state, pipeline), encoding="utf-8")
+    write_text_lf(fd / "00-index.md", render_index(fd, state, pipeline))
 
 
 # ============================================================
@@ -386,7 +396,7 @@ def cmd_init(args) -> None:
             content = "> 本产物由 pipeline 声明生成，按需填写。\n"
         # 追加模板待填写标记（填写完成后删除该行，供门禁 no_fill_marker 判定）
         content += "\n<!-- %s: 本产物为模板生成，填写完成后请删除本行 -->\n" % FILL_MARKER
-        (docs / a).write_text(content, encoding="utf-8")
+        write_text_lf(docs / a, content)
 
     # 状态与视图分离：state 落运行时会话目录，00-index 视图落文档目录
     state = new_state(spec_root, feature, display_name, pipeline)
@@ -576,8 +586,8 @@ def write_handoff(sess: Path, phase: str, payload: dict) -> None:
     doc = dict(payload)
     doc.setdefault("phase", phase)
     doc["written_at"] = now_str()
-    (hd / ("%s.json" % phase)).write_text(
-        json.dumps(doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    write_text_lf(hd / ("%s.json" % phase),
+                  json.dumps(doc, ensure_ascii=False, indent=2) + "\n")
 
 
 def read_handoff(sess: Path, phase: str) -> dict:

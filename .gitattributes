@@ -1,0 +1,13 @@
+# 统一行尾为 LF：无论谁在 Windows/Linux/macOS 提交，仓库索引字节一致
+# （与 dev_docs.py / spec_cli.py 固定 newline="\n" 的产出配套）
+* text=auto eol=lf
+
+# 二进制文件不做换行转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.gz binary
