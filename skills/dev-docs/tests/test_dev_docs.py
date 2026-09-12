@@ -242,7 +242,8 @@ class P3Case(TmpCase):
         self.assertIn("data/blob.bin", paths)
         langs = {e["path"]: e["lang"] for e in entries}
         self.assertEqual(langs["a.py"], "python")
-        self.assertIsNone(langs["src/b.msg"])
+        # v1.5：msg/srv 由 MsgSrvTextAdapter 识别（lang=msgsrv），不再视为 unknown
+        self.assertEqual(langs["src/b.msg"], "msgsrv")
         self.assertEqual(hashes["a.py"], inv.sha256_file(os.path.join(root, "a.py")))
 
     def test_iter_all_files_deterministic(self):

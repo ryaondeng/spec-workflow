@@ -4,23 +4,22 @@ version = "0.1.0"
 description = "Spec 驱动开发工作流（编排引擎 + 质量门禁 + skills 分发）"
 # 开发环境统一 Python 3.12（uv 托管；见 README「开发环境」）
 requires-python = ">=3.12"
-# ★ 红线：运行时零第三方依赖 —— skills/ 下的脚本必须能被裸 Python 直接执行
-dependencies = []
+# dev-docs v1.5：tree-sitter 为运行时硬依赖（全语言统一抽取；见 docs/next/方案-tree-sitter适配器架构.md）
+dependencies = [
+  "tree-sitter>=0.26",
+  "tree-sitter-python>=0.23",
+  "tree-sitter-cpp>=0.23",
+  "tree-sitter-c>=0.23",
+  "tree-sitter-java>=0.23",
+  "tree-sitter-javascript>=0.25",
+  "tree-sitter-typescript>=0.23",
+  "tree-sitter-bash>=0.25",
+]
 
 [dependency-groups]
 dev = [
   "pytest>=8.3",
   "ruff>=0.6",
-]
-# 可选：tree-sitter 语言解析后端（dev-docs 的 C++/Java/JS/Shell 等符号级提取）
-# 用法：uv sync --group ts
-ts = [
-  "tree-sitter>=0.26",
-  "tree-sitter-cpp>=0.23",
-  "tree-sitter-c>=0.23",
-  "tree-sitter-java",
-  "tree-sitter-javascript",
-  "tree-sitter-bash",
 ]
 
 [tool.pytest.ini_options]

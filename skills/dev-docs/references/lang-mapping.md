@@ -1,33 +1,36 @@
-# references/lang-mapping.md — 语言指纹与发现约定
+# references/lang-mapping.md — 语言能力与发现约定（v1.5 适配器架构）
 
-> dev-docs 的盘点按语言能力分档。**可靠的由 AST 精确枚举；启发式的正则近似并显式标注低置信；未列语言不假装覆盖（unknown）。**
+> dev-docs v1.5 起**全语言统一走 tree-sitter 适配器**：每种语言一个
+> `LanguageAdapter` 子类（`scripts/dev_langs/`），全部 reliable 档，
+> 不再有"低置信启发式"。tree-sitter 为运行时硬依赖。
 
-## 1. 能力分档
+## 1. 语言支持矩阵
 
-| 语言 | 枚举器 | 级别 | 说明 |
-|:---|:---|:---|:---|
-| Python | `ast`（stdlib） | **可靠** | 函数/类方法/签名/装饰器路由（FastAPI/Flask 等）/测试用例 |
-| Java | 正则启发 | 低置信 | 方法签名、Spring `@*Mapping` 路由；类边界易误判，需抽审 |
-| TypeScript / JavaScript | 正则启发 | 低置信 | `export function`、`const f = (…)=>`、类方法签名；JS 动态类型易漏 |
-| Shell | 正则启发 | 低置信 | `name()` / `name () {` 函数；无类/类型 |
-| 其他（Go/Rust/Kotlin/Ruby/PHP…） | 未实现 | unknown | 不产出符号；`inventory.confidence` 标注"低置信/未覆盖" |
-
-> 原则：盘点不可靠处显式 unknown/低置信，**不假装覆盖**（宁可少列并标注，不可虚列误导）。
-
-## 2. 入口与模块发现的通用约定（AI 补 architecture/模块四问时用）
-
-| 形态 | 后端服务 | CLI | 库/SDK | 前端 |
+| 语言 | 扩展名 | 适配器 | 能力 | 备注 |
 |:---|:---|:---|:---|:---|
-| 入口 | `main.py`/`app.js`/`server.go`/Spring `Application` | `cmd/`、`__main__.py`、`bin/x.js` | `__init__.py`、`index.ts`、`lib.rs` | `main.tsx`、`App.vue` |
-| 契约来源 | 路由注册 + handler 签名 + Pydantic/Bean | argparse/cobra/clap 子命令 | `__all__`/export/pub 导出 | 路由表 + props/类型 |
-| 路由形态 | FastAPI `@app.post`/Flask `@bp.route`/Spring `@*Mapping`/Django urls | — | — | 前端路由表 |
-| 数据模型 | ORM Model / dataclass / Bean + DDL | 配置文件 | 类型声明 | schema（localStorage/API 返回类型） |
-| 测试约定 | `tests/`、`test_*.py` | 同上 | 同上 | `*.test.ts(x)` |
+| Python | `.py` | `python_ts` | reliable | 顶层函数 + 类方法；`_` 私有不入表；装饰器路由端点（FastAPI/Flask） |
+| C++ | `.cpp .cc .cxx .hpp .hh .h` | `cpp_ts` | reliable | qualified 名拆 `::` → 类归属；匿名命名空间跳过；宏调用不产符号 |
+| C | `.c` | `c_ts` | reliable | 复用 cpp 规则（c 语法） |
+| Java | `.java` | `java_ts` | reliable | `@*Mapping` 注解端点 |
+| JavaScript | `.js .mjs .cjs` | `js_ts` | reliable | 函数/类方法/箭头函数赋值 |
+| TypeScript | `.ts .tsx` | `js_ts` | reliable | 同上（typescript/tsx 语法） |
+| Shell | `.sh` | `bash_ts` | reliable | 函数 + `source` 依赖 |
+| ROS msg/srv | `.msg .srv` | `text_msgsrv` | reliable（text） | 唯一非 tree-sitter 路径：无官方 grammar；产出 `inventory.interfaces`（MSG-/SRV-）并纳入对账 |
+| Go/Rust/Ruby/PHP/Kotlin… | — | 未注册 | unsupported | 文件仍进 L0 全集（防漏锚）；用语义地图归属 + `register` 登记（SYM/EPT/ITF）兜底 |
+
+## 2. 入口与契约发现约定（AI 补 architecture/模块四问时用）
+
+| 形态 | 后端服务 | CLI | ROS 节点 | 库/SDK |
+|:---|:---|:---|:---|:---|
+| 入口 | `main.py`/Spring `Application` | `cmd/`、`__main__.py` | `ros::init` + `ros::spin`（节点 main） | `__init__.py`、export |
+| 契约来源 | 路由注册 + handler 签名 | argparse/cobra/clap 子命令 | 话题 pub/sub + .msg/.srv 接口定义 | `__all__`/export |
+| 数据模型 | ORM Model / dataclass | 配置文件 | `.msg` 字段 / struct（database.h 式协议结构体） | 类型声明 |
+| 测试约定 | `tests/`、`test_*.py` | 同上 | rostest（暂无自动索引） | 同上 |
 
 ## 3. 跨语言执行要点
 
-1. 起手先跑 `dev_docs.py inventory` 看 `langs` 与 `confidence.notes`：知道哪些语言可靠、哪些低置信。
-2. 低置信语言文档在合入前**必须**人工抽审（名字/默认值/错误处理各抽 ≥3 处对照源码）。
-3. 一个仓库多语言：按语言分节写 architecture；模块文档标注该模块语言。
-4. 依赖分析仅 python 自动（import）；其余语言依赖留给 AI 从构建清单（package.json/pom.xml/go.mod）在 architecture/模块四问里补（evidence: 事实——文件路径）。
-5. 框架未识别/私有注解：路由枚举为 0 属正常，先查 confidence，再人工决定是否补端点条目。
+1. 起手先跑 `dev_docs.py inventory` 看 `langs`：v1.5 全部为 reliable（tree-sitter 支持矩阵内）。
+2. 未注册语言（unsupported）的目录仍受"文件归属 100%"门禁约束——语义地图显式归属或声明 ignored。
+3. 一个仓库多语言：按语言分节写 architecture；模块文档标注该模块语言（`reference` 页头部 `lang` 字段）。
+4. 依赖分析：python import 自动；C++ `#include`/CMake/package.xml 解析在路线图（A3 后续），现阶段由 AI 在 architecture/模块四问里补（evidence: 事实——文件路径）。
+5. ROS 形态：`advertise/subscribe/ServiceServer` 的自动化识别在路线图；现阶段由 AI 读源码补（evidence 纪律不变）。

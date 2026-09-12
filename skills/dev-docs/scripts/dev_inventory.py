@@ -3,8 +3,8 @@
 
 原则：
 - 输出确定性：同一代码两次盘点结果 byte-identical（不写入时间戳；遍历顺序稳定）。
-- 盘点不可靠处显式 unknown/低置信标注，不假装覆盖。
-- Python 用标准库 ast（可靠）；Java/TypeScript/Shell 用启发式（低置信，见 lang-mapping.md）。
+- 全语言统一走 tree-sitter（v1.5 适配器架构）：本模块只做编排，语言逻辑全部在
+  dev_langs/ 适配器包中（每语言一个 LanguageAdapter 子类）。
 - 该模块只做"读"，不写任何文档文件。
 """
 
@@ -12,31 +12,14 @@ import ast
 import hashlib
 import json
 import os
-import re
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 from collections import OrderedDict
 
-# ---------------- 常量 ----------------
+from dev_langs import EXT_LANG, get_adapter  # noqa: F401  （EXT_LANG 对外兼容导出）
 
-# 语言指纹：ext -> (lang, 枚举器级别 reliable|heuristic)
-EXT_LANG = {
-    ".py": ("python", "reliable"),
-    ".java": ("java", "heuristic"),
-    ".kt": ("kotlin", "heuristic"),
-    ".ts": ("typescript", "heuristic"),
-    ".tsx": ("typescript", "heuristic"),
-    ".js": ("javascript", "heuristic"),
-    ".mjs": ("javascript", "heuristic"),
-    ".cjs": ("javascript", "heuristic"),
-    ".go": ("go", "heuristic"),
-    ".rs": ("rust", "heuristic"),
-    ".sh": ("shell", "heuristic"),
-    ".rb": ("ruby", "heuristic"),
-    ".php": ("php", "heuristic"),
-}
-# 参与端点发现的语言（后端常见）
-ROUTE_LANGS = ("python", "java", "typescript", "javascript")
+# ---------------- 常量 ----------------
 
 # catkin/ROS 工作空间的构建产物目录（project-type=catkin 时并入排除清单）
 CATKIN_EXCLUDE = ["build", "devel", "install", "log"]
@@ -50,7 +33,7 @@ DEFAULT_EXCLUDE = [
     "migrations", "coverage", ".pytest_cache", ".tox", ".mypy_cache", "generated-images",
 ]
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 # ---------------- 工具 ----------------
@@ -147,8 +130,9 @@ def detect_langs(root, extra_exclude):
     langs = OrderedDict()
     for fp in iter_code_files(root, extra_exclude):
         ext = os.path.splitext(fp)[1].lower()
-        lang, level = EXT_LANG[ext]
-        langs.setdefault(lang, level)  # 首次出现的可靠性级别
+        lang = EXT_LANG.get(ext)
+        if lang:
+            langs.setdefault(lang, "reliable")  # tree-sitter 适配器全档 reliable
     return dict(langs)
 
 
@@ -195,7 +179,7 @@ def iter_all_files(root, extra_exclude):
                               "note": "skipped_large %d bytes" % st.st_size})
                 continue
             ext = os.path.splitext(fn)[1].lower()
-            lang = EXT_LANG.get(ext, (None, None))[0]
+            lang = EXT_LANG.get(ext)
             entries.append({"path": rel, "bytes": st.st_size, "lang": lang})
             hashes[rel] = sha256_file(fp)
     return entries, hashes, notes
@@ -207,11 +191,38 @@ def _rel(root, path):
 
 # ---------------- 模块划分 ----------------
 
-def build_modules(root, extra_exclude):
-    """代码文件归属划分模块（自底向上聚合单链目录）：
+def _catkin_packages(root, extra):
+    """扫描 package.xml（catkin 包边界）：返回 [{path(相对), name}]，按路径排序。"""
+    pkgs = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        keep = []
+        for d in sorted(dirnames):
+            rel = os.path.relpath(os.path.join(dirpath, d), root)
+            if not is_excluded(rel, extra):
+                keep.append(d)
+        dirnames[:] = keep
+        if "package.xml" in filenames:
+            rel = _rel(root, dirpath)
+            name = None
+            try:
+                name = ET.parse(os.path.join(dirpath, "package.xml")).findtext("name")
+            except (ET.ParseError, OSError):
+                name = None
+            pkgs.append({"path": rel, "name": (name or os.path.basename(rel)).strip()})
+    return sorted(pkgs, key=lambda x: x["path"])
+
+
+def build_modules(root, extra_exclude, project_type=None):
+    """代码文件归属划分模块。
+
+    catkin：发现 package.xml 即以包目录为模块单元（包内子目录不拆分）；
+    generic / 未找到包：原"自底向上聚合单链目录"算法（行为不变）：
     直接含代码文件的目录为候选；若某目录内只有一个候选子模块且自身无直接代码，
-    则上聚到该目录（如 repo/a/pkg/scripts -> repo/a/pkg），多个并列子模块则各自独立。
-    根目录自身代码归 MOD-000-root。"""
+    则上聚到该目录，多个并列子模块则各自独立。根目录自身代码归 MOD-000-root。"""
+    if project_type == "catkin":
+        pkgs = _catkin_packages(root, extra_exclude)
+        if pkgs:
+            return _modules_from_pkgs(pkgs, root, extra_exclude)
     code_files = iter_code_files(root, extra_exclude)
     buckets = OrderedDict()  # rel_dir -> [files]
     root_files = []
@@ -267,12 +278,43 @@ def build_modules(root, extra_exclude):
     return modules
 
 
+def _modules_from_pkgs(pkgs, root, extra):
+    """catkin 包 -> 模块（一包一模块；包内子目录不拆分；包外代码文件归 MOD-000 root）。"""
+    code_files = iter_code_files(root, extra)
+    rels = [_rel(root, f) for f in code_files]
+    modules = []
+    leftovers = []
+    covered = []
+    for p in pkgs:
+        covered.append(p["path"] + "/")
+    for rel in rels:
+        if not any(rel.startswith(c) for c in covered) and "/" in rel:
+            leftovers.append(rel)
+    idx = 1
+    if [r for r in rels if "/" not in r]:
+        modules.append({"id": "MOD-000", "name": "root", "path": ".",
+                        "langs": _dir_langs([f for f, r in zip(code_files, rels)
+                                             if "/" not in r]), "kind": "root"})
+    for p in pkgs:
+        files = [f for f, r in zip(code_files, rels) if r.startswith(p["path"] + "/")]
+        modules.append({
+            "id": "MOD-%03d" % idx, "name": p["name"], "path": p["path"],
+            "langs": _dir_langs(files), "kind": "package", "deps": [],
+        })
+        idx += 1
+    if leftovers:
+        modules.append({"id": "MOD-%03d" % idx, "name": "misc", "path": "",
+                        "langs": _dir_langs([f for f, r in zip(code_files, rels)
+                                             if r in leftovers]), "kind": "misc"})
+    return modules
+
+
 def _dir_langs(files):
     out = OrderedDict()
     for fp in files:
         ext = os.path.splitext(fp)[1].lower()
         if ext in EXT_LANG:
-            out.setdefault(EXT_LANG[ext][0], None)
+            out.setdefault(EXT_LANG[ext], None)
     return sorted(out)
 
 
@@ -293,200 +335,6 @@ def module_of(modules, root, filepath):
                 best = m["id"]
                 best_len = len(p)
     return best
-
-
-# ---------------- Python 符号枚举（可靠） ----------------
-
-_HTTP_VERB = {"get", "post", "put", "delete", "patch", "head", "options", "trace"}
-
-
-def _is_public(name):
-    return not name.startswith("_")
-
-
-def _decorator_name(node):
-    """还原装饰器调用/名字的第一段，如 @app.route -> 'app.route'，@app.post -> 'app.post'。"""
-    if isinstance(node, ast.Attribute):
-        base = _decorator_name(node.value)
-        return (base + "." + node.attr) if base else node.attr
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Call):
-        return _decorator_name(node.func)
-    return ""
-
-
-def _decorator_str(node):
-    if isinstance(node, ast.Call):
-        fn = _decorator_name(node.func)
-        arg0 = None
-        if node.args:
-            if isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
-                arg0 = node.args[0].value
-        kw = {}
-        for k in node.keywords:
-            if k.arg and isinstance(k.value, ast.Constant) and isinstance(k.value.value, str):
-                kw[k.arg] = k.value.value
-        return {"decorator": fn, "path": arg0, "kw": kw}
-    return {"decorator": _decorator_name(node), "path": None, "kw": {}}
-
-
-def _collect_endpoints(decorators, handler, module_id, filepath, line):
-    eps = []
-    for d in decorators:
-        info = _decorator_str(d)
-        fn = info["decorator"] or ""
-        tail = fn.rsplit(".", 1)[-1]
-        path = info["path"]
-        methods = None
-        if tail in _HTTP_VERB:
-            methods = [tail.upper()]
-        elif tail == "route" and "methods" in info["kw"]:
-            methods = info["kw"]["methods"].upper().split(",")
-        if (methods or tail == "route") and path and path.startswith("/"):
-            eps.append({
-                "id": "API-XXX", "method": methods or ["*"],
-                "path": path, "handler": handler,
-            })
-        elif fn and (("api" in fn.lower()) or tail in _HTTP_VERB or tail == "route") and path:
-            eps.append({
-                "id": "API-XXX", "method": (methods or ["*"]),
-                "path": path, "handler": handler,
-            })
-    return eps
-
-
-def _sig_from_source(source, node):
-    """从源码行构造签名文本（含 async/def 起始行至冒号行）。"""
-    lines = source.splitlines()
-    start = node.lineno - 1
-    if start < 0 or start >= len(lines):
-        return ""
-    # 找参数/返回结束行：统计括号深度
-    depth = 0
-    buf = []
-    i = start
-    while i < len(lines):
-        line = lines[i]
-        buf.append(line)
-        depth += line.count("(") - line.count(")")
-        if depth <= 0 and (")" in line or i > start):
-            break
-        if i - start > 60:  # 防御
-            break
-        i += 1
-    sig = " ".join(x.strip() for x in buf)
-    if "->" in sig:
-        sig = sig.split("->")[0].rstrip()
-    if sig.endswith(":"):
-        sig = sig[:-1]
-    sig = re.sub(r"\s+", " ", sig)
-    return sig.strip()
-
-
-def scan_python(source, filepath, module_id, counters):
-    """返回 (symbols, endpoints, notes)。counters 跨文件共享，保证 ID 全局唯一且输出确定。"""
-    symbols, endpoints = [], []
-    try:
-        tree = ast.parse(source, filename=filepath)
-    except SyntaxError as e:
-        return symbols, endpoints, {"note": "syntax_error %s" % (e,)}
-
-    def _mkid():
-        counters["fun"] += 1
-        return "FUN-%03d" % counters["fun"]
-
-    def _mkep():
-        counters["api"] += 1
-        return "API-%03d" % counters["api"]
-
-    def _add_func(name, qname, node, kind):
-        sig = _sig_from_source(source, node)
-        dec = [_decorator_name(x) for x in getattr(node, "decorator_list", [])]
-        return {
-            "id": _mkid(), "kind": kind, "module": module_id,
-            "qname": qname, "file": filepath, "line": node.lineno,
-            "signature": sig, "public": _is_public(name),
-            "decorators": dec, "tested_by": [],
-        }
-
-    for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and _is_public(node.name):
-            s = _add_func(node.name, node.name, node, "function")
-            symbols.append(s)
-            for ep in _collect_endpoints(node.decorator_list, node.name, module_id, filepath, node.lineno):
-                ep["id"] = _mkep()
-                ep["module"] = module_id
-                ep["file"] = filepath
-                ep["line"] = node.lineno
-                ep["kind"] = "endpoint"
-                ep["handler"] = node.name
-                ep["confidence"] = "reliable"
-                endpoints.append(ep)
-                s.setdefault("endpoints", []).append(ep["id"])
-        elif isinstance(node, ast.ClassDef) and _is_public(node.name):
-            for item in node.body:
-                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and _is_public(item.name):
-                    s = _add_func(item.name, "%s.%s" % (node.name, item.name), item, "method")
-                    s["cls"] = node.name
-                    symbols.append(s)
-                    for ep in _collect_endpoints(item.decorator_list, "%s.%s" % (node.name, item.name),
-                                                 module_id, filepath, item.lineno):
-                        ep["id"] = _mkep()
-                        ep["module"] = module_id
-                        ep["file"] = filepath
-                        ep["line"] = item.lineno
-                        ep["kind"] = "endpoint"
-                        ep["confidence"] = "reliable"
-                        endpoints.append(ep)
-    return symbols, endpoints, {}
-
-
-def _map_tested(tests):
-    """启发式：测试名 test_xxx -> 相关符号名 xxx（供 AI 提取示例时索引，非精确）。"""
-    return tests
-
-
-# ---------------- 启发式扫描（Java/TS/Shell 等，低置信） ----------------
-
-_JAVA_SIG = re.compile(
-    r"(?m)^\s*(?:public|protected|private)?\s*(?:static\s+)?(?:final\s+)?"
-    r"(?:[\w.<>\[\], ?]+)\s+(\w+)\s*\([^)]*\)\s*(?:throws\s+[\w, ]+)?\s*\{?"
-)
-_JAVA_ANN = re.compile(r"(?m)^\s*@(GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping|RequestMapping|Mapping)"
-                       r"\s*(\(\s*\"([^\"]+)\"\s*(?:,\s*method\s*=\s*(RequestMethod\.)?(\w+))?\))?")
-_TS_EXPORT = re.compile(r"(?m)^\s*export\s+(?:default\s+)?(?:async\s+)?function\s+(\w+)\s*\(([^)]*)\)")
-_TS_CONSTFN = re.compile(
-    r"(?m)^\s*(?:export\s+)?(?:const|let)\s+(\w+)\s*=\s*(?:async\s+)?\(([^)]*)\)\s*(?:=>|:)\s*[^=]")
-_TS_CLASS_M = re.compile(r"(?m)^\s*(?:(?:public|private|protected|async|static|get|set)\s+)*(\w+)\s*\(([^)]*)\)\s*\{")
-_TS_METHOD = re.compile(r"(?m)^\s*(?:(?:public|private|protected)\s+)?(\w+)\s*\(([^)]*)\)\s*:\s*[\w<>\[\]|, ?]+")
-_SH_FUNC = re.compile(r"(?m)^\s*([a-zA-Z_][\w]*)\s*\(\s*\)\s*\{|^([a-zA-Z_][\w]*)\s*\(\)")
-
-
-def scan_heuristic(source, lang, counters):
-    out = []
-    if lang == "java":
-        for m in _JAVA_SIG.finditer(source):
-            counters["fun"] += 1
-            out.append({"id": "FUN-%03d" % counters["fun"], "kind": "method", "qname": m.group(1),
-                        "signature": m.group(0).strip()})
-    elif lang in ("typescript", "javascript"):
-        for m in _TS_EXPORT.finditer(source):
-            counters["fun"] += 1
-            out.append({"id": "FUN-%03d" % counters["fun"], "kind": "function", "qname": m.group(1),
-                        "signature": "function %s(%s)" % (m.group(1), m.group(2))})
-        for m in _TS_CONSTFN.finditer(source):
-            counters["fun"] += 1
-            out.append({"id": "FUN-%03d" % counters["fun"], "kind": "function", "qname": m.group(1),
-                        "signature": "%s(%s)" % (m.group(1), m.group(2))})
-    elif lang == "shell":
-        for m in _SH_FUNC.finditer(source):
-            name = m.group(1) or m.group(2)
-            if name:
-                counters["fun"] += 1
-                out.append({"id": "FUN-%03d" % counters["fun"], "kind": "function", "qname": name,
-                            "signature": "%s()" % name})
-    return out
 
 
 # ---------------- 测试索引 ----------------
@@ -528,68 +376,43 @@ def build_inventory(root, extra_exclude=None, project_type="auto"):
     if ptype == "catkin":
         # catkin 构建产物目录并入排除（对所有扫描生效：代码/全文件/模块/依赖）
         extra = list(extra) + [p for p in CATKIN_EXCLUDE if p not in extra]
-    modules = build_modules(root, extra)
+    modules = build_modules(root, extra, ptype)
     langs = detect_langs(root, extra)
 
     symbols = []
     endpoints = []
+    interfaces = []
     code_file_hashes = {}
     confidence_notes = []
-    counters = {"fun": 0, "cls": 0, "api": 0}
+    counters = {"fun": 0, "cls": 0, "api": 0, "msg": 0, "srv": 0}
 
     for fp in iter_code_files(root, extra):
         ext = os.path.splitext(fp)[1].lower()
-        lang, level = EXT_LANG[ext]
+        lang = EXT_LANG.get(ext)
+        adapter = get_adapter(ext)
+        if adapter is None:
+            continue
         rel = _rel(root, fp)
-        # 测试文件不生成文档符号，只入测试索引
+        # 测试文件不生成文档符号，只入测试索引（沿用 python 口径）
         base = os.path.basename(fp)
         if lang == "python" and (base.startswith("test_") or rel.startswith("tests/")
                                  or base.endswith("_test.py")):
             code_file_hashes[rel] = sha256_file(fp)
             continue
         try:
-            with open(fp, encoding="utf-8", errors="replace") as fh:
-                source = fh.read()
+            with open(fp, "rb") as fh:
+                data = fh.read()
         except OSError:
             continue
         code_file_hashes[rel] = sha256_file(fp)
         mid = module_of(modules, root, fp)
-        if lang == "python" and level == "reliable":
-            try:
-                ss, eps, note = scan_python(source, rel, mid, counters)
-            except Exception as e:
-                ss, eps, note = [], [], {"note": str(e)}
-            if note:
-                confidence_notes.append({"file": rel, "note": note})
-            for s in ss:
-                s["file"] = rel
-                symbols.append(s)
-            for e in eps:
-                e["file"] = rel
-                endpoints.append(e)
-        else:
-            # 启发式低置信；跳过明显的重复/大型生成文件由 exclude 兜底
-            sigs = scan_heuristic(source, lang, counters)
-            # 端点识别 java 注解（低置信）
-            if lang == "java":
-                for m in _JAVA_ANN.finditer(source):
-                    verb = (m.group(4) or "").upper()
-                    if not verb and "Mapping" in (m.group(1) or ""):
-                        verb = "*"
-                    if verb:
-                        counters["api"] += 1
-                        endpoints.append({
-                            "id": "API-%03d" % counters["api"],
-                            "kind": "endpoint", "module": mid, "method": verb,
-                            "path": m.group(3) or "", "handler": "",
-                            "file": rel, "line": 0, "confidence": "heuristic",
-                        })
-            for s in sigs:
-                s["module"] = mid
-                s["file"] = rel
-                s["public"] = True
-                s["confidence"] = "heuristic"
-                symbols.append(s)
+        syms, eps, ifaces, notes = adapter.scan(data, rel, mid, counters)
+        symbols.extend(syms)
+        endpoints.extend(eps)
+        interfaces.extend(ifaces)
+        for n in notes:
+            confidence_notes.append({"file": rel,
+                                     "note": n.get("note") if isinstance(n, dict) else str(n)})
     # 模块依赖（python import 启发）
     _mod_deps(modules, root, extra)
 
@@ -615,6 +438,7 @@ def build_inventory(root, extra_exclude=None, project_type="auto"):
         "modules": modules,
         "symbols": symbols,
         "endpoints": endpoints,
+        "interfaces": interfaces,
         "tests": tests,
         "code_file_hashes": code_file_hashes,
         "files": files,

@@ -205,6 +205,10 @@ def ref_index_rows(inv_data, module_id):
         if e["module"] != module_id:
             continue
         rows.append("| @%s | %s | 端点 | — |" % (e["id"], _ep_title(e)))
+    for i in inv_data.get("interfaces", []) or []:
+        if i["module"] != module_id:
+            continue
+        rows.append("| @%s | %s | %s | — |" % (i["id"], i["name"], i.get("kind") or "接口"))
     return rows
 
 
@@ -245,7 +249,37 @@ def ref_detail_sections(inv_data, module_id):
     if eps:
         sections.append("## HTTP 端点\n\n" +
                         "\n".join(_ep_card(e) for e in eps))
+    ifaces = [i for i in inv_data.get("interfaces", []) or [] if i["module"] == module_id]
+    if ifaces:
+        sections.append("## ROS 接口定义\n\n" +
+                        "\n".join(_iface_card(i) for i in ifaces))
     return "\n\n".join(sections) if sections else "（本模块无公开符号；或符号尚未被盘点识别）"
+
+
+def _iface_field(f):
+    """接口字段 -> `类型[数组] 名字`（常量附 =值）。"""
+    t = "%s%s" % (f.get("type", "?"), f.get("array") or "")
+    if f.get("constant") is not None:
+        return "`%s %s=%s`" % (t, f.get("name"), f.get("constant"))
+    return "`%s %s`" % (t, f.get("name"))
+
+
+def _iface_card(i):
+    """ROS msg/srv 卡片：标题写语义名 + 隐藏 ID 锚点（纳入对账）。"""
+    if i.get("kind") == "srv":
+        req = "、".join(_iface_field(f) for f in i.get("request") or []) or "—"
+        rsp = "、".join(_iface_field(f) for f in i.get("response") or []) or "—"
+        detail = "- 请求：%s\n- 响应：%s（file %s:%s, evidence: 事实）<!-- @%s -->" % (
+            req, rsp, i["file"], i.get("line", 0), i["id"])
+    else:
+        fields = "、".join(_iface_field(f) for f in i.get("fields") or []) or "—"
+        detail = "- 字段：%s（file %s:%s, evidence: 事实）<!-- @%s -->" % (
+            fields, i["file"], i.get("line", 0), i["id"])
+    title = "%s（%s）" % (i["name"], i["kind"])
+    return ("### %s\n\n"
+            "%s\n"
+            "- 用途 / 语义：%s\n"
+            % (title, detail, SYM_TODO))
 
 
 def reference_tpl_values(inv_data, m):
@@ -954,6 +988,8 @@ def inventory_ids(inv_data):
             ids.add(s["id"])
     for e in inv_data.get("endpoints", []):
         ids.add(e["id"])
+    for i in inv_data.get("interfaces", []) or []:
+        ids.add(i["id"])          # msg/srv 接口定义同样纳入对账（漏写即 orphan）
     return ids
 
 
@@ -1172,7 +1208,8 @@ def _line_kind(lines, lineno):
     s = lines[lineno - 1].strip()
     if not s:
         return "blank"
-    if s.startswith("#"):
+    if s.startswith("#") and not s.startswith(("#define", "#include", "#pragma", "#if", "#endif", "#else", "#elif")):
+        # `#` 注释判定排除 C 预处理指令（#define/#include 等是实质代码行）
         return "comment"
     if s.startswith(("import ", "from ")):
         return "import"
@@ -1466,7 +1503,8 @@ def cmd_report(inv_data, root, out):
         "code_file_hashes": inv_data.get("code_file_hashes") or {},
         "files_hashes": inv_data.get("files_hashes") or {},
         "symbol_ids": sorted(({s["id"] for s in inv_data.get("symbols", [])}
-                              | {e["id"] for e in inv_data.get("endpoints", [])})),
+                              | {e["id"] for e in inv_data.get("endpoints", [])}
+                              | {i["id"] for i in inv_data.get("interfaces", []) or []})),
         "docs": doc_hashes,
     }
     json_save(os.path.join(out, ".baseline.json"), baseline)

@@ -30,18 +30,22 @@ uv run ruff check .     # 静态检查
 uv sync --group ts
 ```
 
-**无 uv 时**：测试本身基于 stdlib `unittest`，裸 Python 直接可跑（不装任何依赖）：
+**无 uv 时**：根回归基于 stdlib `unittest` 可直接跑；dev-docs（v1.5 起）依赖 tree-sitter，
+安装 `skills/dev-docs/requirements.txt` 后运行：
 
 ```bash
 python3 -m unittest tests.test_spec_cli tests.test_installer tests.test_health_check
-cd skills/dev-docs && python3 -m unittest tests.test_dev_docs
+pip install -r skills/dev-docs/requirements.txt
+python3 -m unittest discover -s skills/dev-docs/tests -t skills/dev-docs
 ```
 
-## 依赖红线
+## 依赖说明（v1.5 变更）
 
-- **运行时零第三方依赖**：`skills/` 下的所有脚本必须能被裸 Python 直接执行（`pyproject.toml` 中 `dependencies = []`）。
-- 开发期工具（pytest / ruff）与可选解析后端（tree-sitter）只进 `uv.lock`，不属于分发物。
-- dev-docs 的可选依赖说明见 `skills/dev-docs/SKILL.md` 与 `references/known-limits.md`。
+- **dev-docs 运行时依赖 tree-sitter**（2026-09-12 拍板：全语言统一走 tree-sitter 适配器抽取，
+  「零第三方依赖」约定作废）；依赖声明见 `pyproject.toml` 与 `skills/dev-docs/requirements.txt`，
+  `install.py` 安装时自动 pip install（`--skip-deps` 可跳过）。
+- 编排引擎（spec-dev-workflow）仍为纯 stdlib。
+- pytest / ruff 仅开发期工具。
 
 ## 安装 skills
 

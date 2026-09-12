@@ -13,6 +13,7 @@
 """
 import argparse
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -50,6 +51,8 @@ def main(argv=None):
                    help="全局安装（~/.codebuddy/skills/）")
     g.add_argument("--project", metavar="PATH", help="项目级安装（<path>/.codebuddy/skills/）")
     ap.add_argument("--force", action="store_true", help="覆盖安装（删除旧目录后重装）")
+    ap.add_argument("--skip-deps", action="store_true",
+                    help="跳过 dev-docs 运行时依赖安装（tree-sitter 系；默认自动 pip install）")
     a = ap.parse_args(argv)
     mode = "project" if a.project else "global"
 
@@ -78,6 +81,18 @@ def main(argv=None):
         print("（无新增，全部已存在或跳过）")
     else:
         print("已安装 %d 个 skill：%s" % (count, ", ".join(s.name for s in srcs)))
+
+    # dev-docs 运行时依赖（v1.5：tree-sitter 为硬依赖，全语言统一抽取）
+    req = Path(__file__).resolve().parent / "skills" / "dev-docs" / "requirements.txt"
+    if req.is_file() and not a.skip_deps:
+        print("安装 dev-docs 运行时依赖: %s" % req.name)
+        r = subprocess.run([sys.executable, "-m", "pip", "install", "-r", str(req)])
+        if r.returncode != 0:
+            print("⚠ 依赖安装失败——dev-docs 需 tree-sitter 系运行时依赖，"
+                  "请手动执行: %s -m pip install -r %s" % (sys.executable, req))
+    elif a.skip_deps:
+        print("[SKIP] 依赖安装（--skip-deps）；dev-docs 运行前需自行安装 tree-sitter 系依赖")
+
     print("打开该项目的 AI 会话说「开始开发 X」或「恢复 X」即可使用；"
           "review 阶段质量门控由 spec-health-check 驱动")
 

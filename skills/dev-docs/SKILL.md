@@ -1,6 +1,6 @@
 ---
 name: dev-docs
-version: 1.4.1
+version: 1.5.0
 description: >
   从已有代码库反建技术文档（dev-docs）：面向没有接口/设计/架构文档的存量项目，
   用「规则提取（文件全集/机器盘点/对账漂移）+ LLM 提取（AI 通读建语义地图再按模板填文档）」双轨机制，
@@ -30,7 +30,7 @@ description: >
 
 ## 系统要求（跨平台）
 
-- Python 3.7+，零第三方依赖。Windows / Linux / macOS 原生可跑（`scripts/` 全为 Python）。
+- Python 3.12+，运行时依赖 tree-sitter（v1.5 起全语言统一抽取；安装器自动 `pip install -r skills/dev-docs/requirements.txt`，手动安装亦可）。Windows / Linux / macOS 原生可跑。
 - Windows 若没有 `python3` 启动名，用 `python` 或 `py -3` 替代下文命令中的 `python3`。
 - 生成产物统一 LF 换行（脚本跨平台固定 `newline="\n"`）：任何平台生成结果字节一致，
   确定性（byte-identical）与 git diff / CI 漂移检测不受换行符影响。
