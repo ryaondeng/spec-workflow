@@ -1452,8 +1452,10 @@ def cmd_check(inv_data, out, drift, root=None, strict=False):
     unf, per = unfilled_todo_count(out)
     if unf:
         worst = max(sorted(per.items()), key=lambda kv: kv[1])
-        print("语义填充：剩余未填 TODO %d 处（最多: %s %d）——建议逐符号补齐后再交付（仅提示，不作为门禁）"
-              % (unf, worst[0], worst[1]))
+        print("语义填充：剩余未填 TODO %d 处（最多: %s %d）——%s"
+              % (unf, worst[0], worst[1],
+                 "--strict 下为 ERROR（交付须填尽）" if strict else
+                 "普通模式仅提示；交付口径为一次填尽（--strict 门禁）"))
     else:
         print("语义填充：全部符号已填 ✓")
     if root and inv_data.get("is_git") and inv_data.get("source_commit"):
@@ -1483,7 +1485,12 @@ def cmd_check(inv_data, out, drift, root=None, strict=False):
                ["%s → %s" % (it["doc"], it["ref"]) for it in (rep.get("ref_line_issues") or [])],
                "运行 fixrefs --write 自动修正"))
     if strict:
-        groups = groups + (("ai_fill_left(AI 工单未填尽)", rep["ai_fill"], "填写对应章节后删除 <!-- AI-FILL --> 块"),)
+        groups = groups + (
+            ("ai_fill_left(AI 工单未填尽)", rep["ai_fill"], "填写对应章节后删除 <!-- AI-FILL --> 块"),
+            # v1.5：交付口径 = 一次填尽（不再以"分批交付"留待办）
+            ("semantic_todo_left(符号/接口卡片语义未填尽)",
+             ["%s（%d 处）" % (k, v) for k, v in sorted(per.items())], "按锚点补齐「用途/参数/返回/错误」"),
+        )
     for label, items, fix in groups:
         if items:
             print("[%s] %d 项（%s）:" % (label, len(items), fix))
@@ -1492,7 +1499,7 @@ def cmd_check(inv_data, out, drift, root=None, strict=False):
             if len(items) > 20:
                 print("    ... 共 %d" % len(items))
     if warns and not strict:
-        print("[warn] %d 项（--strict 时升级为 ERROR；可分批交付）:" % len(warns))
+        print("[warn] %d 项（普通模式提示；交付须 --strict 全绿）:" % len(warns))
         for w in warns[:10]:
             print("    ~ %s" % w)
     if errors or (strict and warns):

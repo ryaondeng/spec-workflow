@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """dev-docs 核心逻辑单测（unittest，零第三方依赖）。"""
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -520,6 +521,23 @@ class PlanAndBrief(TmpCase):
         self.assertTrue(d["symbols"])
         self.assertTrue(d["requirements"])
         self.assertTrue(d["checklist"])
+
+    def test_strict_gate_semantic_todo_left(self):
+        """v1.5 交付口径：卡片语义未填尽时 --strict 必须 FAIL（一次填尽）。"""
+        root, out, data = self._init()
+        dev_docs.cmd_plan(root, out, write=True)
+        dev_docs.extract_layer(data, root, out, "all")
+        for p in dev_docs.load_plan(out)["pages"]:
+            dev_docs.cmd_promote(out, os.path.join(out, p["slug"] + ".md.draft"), data)
+        self.assertEqual(dev_docs.cmd_check(data, out, False, root, strict=True), 1)
+        # 卡片语义填尽 + 清 AI-FILL 后同一份产物应转绿
+        for fp in dev_docs.list_md(out):
+            text = open(fp, encoding="utf-8").read().replace(
+                "<!-- TODO AI 依源码填写（用途 / 参数 / 返回 / 错误；缺失写 unknown） -->", "已填语义")
+            text = re.sub(r"<!-- AI-FILL:[^\n]*-->\n", "", text)
+            with open(fp, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(text)
+        self.assertEqual(dev_docs.cmd_check(data, out, False, root, strict=True), 0)
 
     def test_index_coverage_rendered_on_extract(self):
         root, out, data = self._init()
