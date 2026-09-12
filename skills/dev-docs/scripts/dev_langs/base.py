@@ -143,7 +143,7 @@ class LanguageAdapter:
             "topic": ("top", "TOP"), "service": ("svc", "SVC"),
             "node": ("nde", "NDE"),
         }.get(kind, ("msg", "MSG"))
-        counters[key] += 1
+        counters[key] = counters.get(key, 0) + 1      # 容错：调用方 counters 未预置该键
         return "%s-%%03d" % prefix % counters[key]
 
     # ---- 公共 schema 构造 ----

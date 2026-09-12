@@ -11,7 +11,7 @@ from dev_langs import EXT_LANG, get_adapter  # noqa: E402
 
 
 def counters():
-    return {"fun": 0, "cls": 0, "api": 0, "msg": 0, "srv": 0}
+    return {"fun": 0, "cls": 0, "api": 0, "msg": 0, "srv": 0, "top": 0, "svc": 0, "nde": 0}
 
 
 def scan(adapter, src, name="x.py", module="MOD-001"):
@@ -175,6 +175,44 @@ class JavaJsBash(unittest.TestCase):
     def test_bash(self):
         syms, _, _, _ = scan(get_adapter(".sh"), "#!/bin/bash\nstart() {\n  echo go\n}\n", "s.sh")
         self.assertEqual([s["qname"] for s in syms], ["start"])
+
+
+class RospyShapes(unittest.TestCase):
+    SRC = ("import rospy\n"
+           "from yolov7.msg import recTargetInfo, ncuCmd\n"
+           "rospy.init_node('yolo_node', anonymous=True)\n"
+           "#rospy.init_node('commented_out')\n"
+           "rospy.Subscriber('NcuCmd', ncuCmd, cb)\n"
+           "pub = rospy.Publisher('/RecTargetInfo', recTargetInfo, queue_size=10)\n"
+           "srv = rospy.ServiceProxy('/set_mode', SetMode)\n")
+
+    def setUp(self):
+        _, _, self.ifaces, _ = scan(get_adapter(".py"), self.SRC, "d.py")
+
+    def test_node_topic_service(self):
+        got = {(i["kind"], i["name"], i.get("role")) for i in self.ifaces}
+        self.assertIn(("node", "yolo_node", None), got)
+        self.assertIn(("topic", "NcuCmd", "sub"), got)
+        self.assertIn(("topic", "/RecTargetInfo", "pub"), got)
+        self.assertIn(("service", "/set_mode", "client"), got)
+
+    def test_commented_code_ignored(self):
+        self.assertFalse(any(i["name"] == "commented_out" for i in self.ifaces))
+
+    def test_message_types_captured(self):
+        pub = [i for i in self.ifaces if i.get("role") == "pub"][0]
+        self.assertEqual(pub["msg"], "recTargetInfo")
+
+
+class Doctor(unittest.TestCase):
+    def test_doctor_reports_adapters(self):
+        import tempfile
+        from dev_docs import cmd_doctor
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, "dev-docs")
+            os.makedirs(out)
+            rc = cmd_doctor(tmp, out)
+        self.assertEqual(rc, 0)     # 开发环境装齐语法包 → OK
 
 
 class CatkinModules(unittest.TestCase):

@@ -1622,6 +1622,48 @@ def brief_data(inv_data, out, page):
     }
 
 
+def cmd_doctor(root, out):
+    """环境与能力自检（排查"为什么没符号"的第一入口）：
+    Python / tree-sitter 版本、各语言适配器可用性、产物与页面树状态。"""
+    import platform
+    from dev_langs import EXT_LANG, available_extractors
+    print("=== dev-docs doctor ===")
+    print("python     : %s（%s）" % (platform.python_version(), sys.executable))
+    try:
+        import importlib.metadata as md
+        print("tree-sitter: %s" % md.version("tree-sitter"))
+    except Exception:
+        print("tree-sitter: 未安装 —— 请执行 pip install -r "
+              "<skill>/requirements.txt（v1.5 起为运行时硬依赖）")
+    info = available_extractors()
+    missing = [lang for lang, i in info.items() if i["extractor"] == "missing"]
+    print("语言适配器（ext 数 %d）：" % len(EXT_LANG))
+    for lang in sorted(info):
+        i = info[lang]
+        mark = "✓" if i["extractor"] != "missing" else "✗"
+        print("  %s %-11s %-11s %s" % (mark, lang, i["extractor"], i["version"] or "-"))
+    inv_path = os.path.join(out, "inventory.json")
+    data = json_load(inv_path)
+    print("产物       : inventory %s%s" % (
+        "有" if data else "无",
+        "（%d 文件 / %d 模块 / %d 符号 / %d 接口）" % (
+            len(data.get("files") or []), len(data.get("modules") or []),
+            len(data.get("symbols") or []), len(data.get("interfaces") or []))
+        if data else ""))
+    print("             plan %s | 语义地图 %s | 登记 %s | 基线 %s" % (
+        "有" if os.path.exists(os.path.join(out, PLAN_FILE)) else "无",
+        "有" if os.path.exists(os.path.join(out, SEMANTIC_MAP_FILE)) else "无",
+        "有" if os.path.exists(os.path.join(out, REG_FILE)) else "无",
+        "有" if os.path.exists(os.path.join(out, ".baseline.json")) else "无",
+    ))
+    if missing:
+        print("⚠ 缺失语法包：%s —— 装齐后这些语言才有符号级抽取"
+              % ", ".join(sorted(missing)))
+        return 1
+    print("RESULT: OK（全部语言适配器可用）")
+    return 0
+
+
 def cmd_brief(inv_data, root, out, page_slug, as_json=False):
     plan = load_plan(out)
     page = page_by_slug(plan, page_slug)
@@ -1696,10 +1738,10 @@ def main(argv=None):
     import argparse
     ap = argparse.ArgumentParser(prog="dev_docs.py", description="dev-docs 从代码库逆向生成文档")
     ap.add_argument("command", choices=["inventory", "plan", "extract", "brief", "promote",
-                                        "check", "report", "register", "fixrefs"],
+                                        "check", "report", "register", "fixrefs", "doctor"],
                     help="inventory 盘点 | plan 页面树 | extract 生成 draft | brief 页级填写工单 | "
                          "promote draft 转正 | check 对账/漂移 | report 索引+基线 | "
-                         "register 人工登记 | fixrefs 修正引用行号偏移")
+                         "register 人工登记 | fixrefs 修正引用行号偏移 | doctor 环境与能力自检")
     ap.add_argument("--dir", default=".", help="目标项目目录（默认当前目录；git 仓库内自动取仓库根）")
     ap.add_argument("--out", default="dev-docs", help="输出子目录名（docs/<out>，默认 dev-docs）")
     ap.add_argument("--layer", choices=["index", "architecture", "usage", "reference", "data", "all"],
@@ -1764,6 +1806,8 @@ def main(argv=None):
         cmd_report(data, root, out)
     elif a.command == "fixrefs":
         return cmd_fixrefs(root, out, load_inventory(out), write=a.write)
+    elif a.command == "doctor":
+        return cmd_doctor(root, out)
     return 0
 
 

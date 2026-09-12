@@ -7,10 +7,21 @@
 - qname：顶层 = 函数名；方法 = ``类名.方法名``（点号风格保持）
 - 签名 = def 起始行至括号闭合（与旧版 _sig_from_source 同算法）
 - 装饰器路由端点（FastAPI/Flask 等）从 decorator 节点还原
+- ROS 领域扩展（rospy）：init_node/Publisher/Subscriber/Service/ServiceProxy →
+  节点入口与话题/服务绑定条目（NDE-/TOP-/SVC-），与 cpp 侧同一 schema
 """
+import re
+
 from .base import LanguageAdapter, get_parser, node_text, sig_from_lines
 
 _HTTP_VERB = {"get", "post", "put", "delete", "patch", "head", "options", "trace"}
+
+_ROSPY_NODE = re.compile(r"rospy\.init_node\s*\(\s*['\"]([^'\"]+)['\"]")
+_ROSPY_PUB = re.compile(r"rospy\.Publisher\s*\(\s*['\"]([^'\"]+)['\"]\s*,\s*([\w.]+)")
+_ROSPY_SUB = re.compile(r"rospy\.Subscriber\s*\(\s*['\"]([^'\"]+)['\"]\s*,\s*([\w.]+)")
+_ROSPY_SVC = re.compile(r"rospy\.Service\s*\(\s*['\"]([^'\"]+)['\"]\s*,\s*([\w.]+)")
+_ROSPY_SVC_PROXY = re.compile(r"rospy\.ServiceProxy\s*\(\s*['\"]([^'\"]+)['\"]\s*,\s*([\w.]+)")
+_ROSPY_GUARD = re.compile(r"\brospy\b")
 
 
 def _dotted_name(data, node):
@@ -63,6 +74,53 @@ def _collect_endpoints(deco_infos, handler):
         elif fn and (("api" in fn.lower()) or tail in _HTTP_VERB or tail == "route") and path:
             eps.append({"id": "API-XXX", "method": methods or ["*"], "path": path, "handler": handler})
     return eps
+
+
+def _in_comment(text, pos):
+    """匹配点是否位于注释内（行首至匹配点间出现 #）——避免抓取被注释掉的代码。"""
+    ls = text.rfind("\n", 0, pos) + 1
+    return "#" in text[ls:pos]
+
+
+def _scan_ros(data, text, rel_path, module_id, counters, iface_id):
+    """rospy ROS 形态 → 节点/话题/服务绑定条目（与 cpp 侧同一 schema）。"""
+    if not _ROSPY_GUARD.search(text):
+        return []
+
+    def line_of(m):
+        return text[:m.start()].count("\n") + 1
+
+    out = []
+
+    def add(kind, name, m, msg=None, srv=None, role=None):
+        item = {"id": iface_id(counters, kind), "kind": kind, "module": module_id,
+                "name": name, "file": rel_path, "line": line_of(m),
+                "extractor": "tree-sitter", "confidence": "reliable"}
+        if msg:
+            item["msg"] = msg
+        if srv:
+            item["srv"] = srv
+        if role:
+            item["role"] = role
+        out.append(item)
+
+    for m in _ROSPY_NODE.finditer(text):
+        if not _in_comment(text, m.start()):
+            add("node", m.group(1), m)
+    for m in _ROSPY_PUB.finditer(text):
+        if not _in_comment(text, m.start()):
+            add("topic", m.group(1), m, msg=m.group(2), role="pub")
+    for m in _ROSPY_SUB.finditer(text):
+        if not _in_comment(text, m.start()):
+            add("topic", m.group(1), m, msg=m.group(2), role="sub")
+    for m in _ROSPY_SVC.finditer(text):
+        if not _in_comment(text, m.start()):
+            add("service", m.group(1), m, srv=m.group(2), role="server")
+    for m in _ROSPY_SVC_PROXY.finditer(text):
+        if not _in_comment(text, m.start()):
+            add("service", m.group(1), m, srv=m.group(2), role="client")
+    out.sort(key=lambda i: (i["file"], i["line"]))
+    return out
 
 
 class PythonTreeSitterAdapter(LanguageAdapter):
@@ -143,4 +201,5 @@ class PythonTreeSitterAdapter(LanguageAdapter):
                     handle_fn(inner, decs)
                 elif inner.type == "class_definition":
                     handle_class(inner, decs)
-        return symbols, endpoints, [], notes
+        interfaces = _scan_ros(data, text, rel_path, module_id, counters, self._iface_id)
+        return symbols, endpoints, interfaces, notes

@@ -66,6 +66,12 @@ class CppTreeSitterAdapter(LanguageAdapter):
         def line_of(m):
             return text[:m.start()].count("\n") + 1
 
+        def in_comment(m):
+            """匹配点位于注释内（行内 // 或块注释行首）→ 跳过（防抓取被注释掉的代码）。"""
+            ls = text.rfind("\n", 0, m.start()) + 1
+            line = text[ls:m.start()]
+            return "//" in line or line.lstrip().startswith("*")
+
         def add(kind, name, m, msg=None, srv=None, role=None):
             item = {
                 "id": self._iface_id(counters, kind), "kind": kind, "module": module_id,
@@ -82,16 +88,20 @@ class CppTreeSitterAdapter(LanguageAdapter):
 
         out = []
         for m in _ROS_TOPIC_PUB.finditer(text):
-            add("topic", m.group(2), m, msg=m.group(1), role="pub")
+            if not in_comment(m):
+                add("topic", m.group(2), m, msg=m.group(1), role="pub")
         for m in _ROS_TOPIC_SUB.finditer(text):
-            add("topic", m.group(2), m, msg=m.group(1), role="sub")
+            if not in_comment(m):
+                add("topic", m.group(2), m, msg=m.group(1), role="sub")
         for m in _ROS_SVC_SERVER.finditer(text):
-            add("service", m.group(1), m, role="server")
+            if not in_comment(m):
+                add("service", m.group(1), m, role="server")
         for m in _ROS_SVC_CLIENT.finditer(text):
-            add("service", m.group(2), m, srv=m.group(1), role="client")
+            if not in_comment(m):
+                add("service", m.group(2), m, srv=m.group(1), role="client")
         for m in _ROS_NODE.finditer(text):
             quotes = re.findall(r'"([^"]+)"', m.group(1))
-            if quotes:
+            if quotes and not in_comment(m):
                 add("node", quotes[-1], m)     # ros::init 第三个字符串参数 = 节点名
         out.sort(key=lambda i: (i["file"], i["line"]))
         return out
