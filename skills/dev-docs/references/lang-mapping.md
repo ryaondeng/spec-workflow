@@ -33,4 +33,5 @@
 2. 未注册语言（unsupported）的目录仍受"文件归属 100%"门禁约束——语义地图显式归属或声明 ignored。
 3. 一个仓库多语言：按语言分节写 architecture；模块文档标注该模块语言（`reference` 页头部 `lang` 字段）。
 4. 依赖分析（v1.5 已实现）：python import 与 C++ `#include` 自动映射为 `modules[].deps`（包内互引）；CMake `find_package` 与 `package.xml` 的 depend 系标签 → `modules[].external_deps`；ROS 调用形态（`advertise`/`subscribe`/`advertiseService`/`serviceClient`/`ros::init` 与 rospy 对应形态）→ `inventory.interfaces` 的 `TOP-/SVC-/NDE-` 条目。剩余细节由 AI 在 architecture/模块四问里补（evidence: 事实——文件路径）。
+5. **行号与证据纪律（v1.5.2）**：①引用行号必须是**代码行**——指向注释 / 字符串（含 `'''…'''` / `/* … */` 内被注释掉的代码）会被 `check --strict` 的 `ref_line_suspect` 拦下；②填卡先用 `brief` 的**候选证据**（定义处前置注释 / 声明行尾注释 / docstring / 字段注释），**不要用调用点注释解释定义处功能**；③常量/函数先看是否被引用，**零引用不得写成现行约定**；④CMake 声明的 msg/srv/可执行若缺文件，`inventory` 会记 `build_issues`（构建风险，须在文档里提示读者）。
 5. ROS 形态：`advertise/subscribe/ServiceServer` 的自动化识别在路线图；现阶段由 AI 读源码补（evidence 纪律不变）。

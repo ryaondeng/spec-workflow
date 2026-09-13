@@ -12,7 +12,7 @@
 """
 import re
 
-from .base import LanguageAdapter, get_parser, node_text, sig_from_lines
+from .base import LanguageAdapter, node_text, parse_tree, sig_from_lines
 
 _HTTP_VERB = {"get", "post", "put", "delete", "patch", "head", "options", "trace"}
 
@@ -131,7 +131,7 @@ class PythonTreeSitterAdapter(LanguageAdapter):
     def _scan(self, data, rel_path, module_id, counters):
         text = data.decode("utf-8", "replace")
         lines = text.splitlines()
-        root = get_parser(self.grammar).parse(data).root_node
+        tree, root = parse_tree(self.grammar, data)
         symbols, endpoints, notes = [], [], []
 
         def func_sym(fn, decorators, cls_name=None):

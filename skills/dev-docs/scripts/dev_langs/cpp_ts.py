@@ -13,7 +13,7 @@
 """
 import re
 
-from .base import LanguageAdapter, get_parser, node_text, walk
+from .base import LanguageAdapter, node_text, parse_tree, walk
 
 _HEADER_EXTS = (".h", ".hpp", ".hh")
 
@@ -107,7 +107,7 @@ class CppTreeSitterAdapter(LanguageAdapter):
         return out
 
     def _scan(self, data, rel_path, module_id, counters):
-        root = get_parser(self.grammar).parse(data).root_node
+        tree, root = parse_tree(self.grammar, data)
         is_header = rel_path.lower().endswith(_HEADER_EXTS)
         symbols, notes = [], []
         cls_stack = []
@@ -186,7 +186,7 @@ class CppTreeSitterAdapter(LanguageAdapter):
         return symbols, [], interfaces, notes
 
     def scan_calls(self, data):
-        root = get_parser(self.grammar).parse(data).root_node
+        tree, root = parse_tree(self.grammar, data)
         out = []
         for n in walk(root):
             if n.type == "call_expression":
@@ -197,7 +197,7 @@ class CppTreeSitterAdapter(LanguageAdapter):
         return out
 
     def scan_deps(self, data):
-        root = get_parser(self.grammar).parse(data).root_node
+        tree, root = parse_tree(self.grammar, data)
         out = []
         for n in walk(root):
             if n.type == "preproc_include":

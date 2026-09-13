@@ -15,6 +15,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import dev_inventory as inv   # noqa: E402
+from dev_langs import docstrings_by_def_line, is_decl_line, line_kind_ts   # noqa: E402
 
 SKILL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEMPLATES = os.path.join(SKILL_DIR, "templates")
@@ -1236,17 +1237,26 @@ def page_ref_errors(inv_data, out):
     return errs
 
 
-def _line_kind(lines, lineno):
-    """源码行性质：code / import / comment / blank / oor（越界）。"""
+def _line_kind(lines, lineno, abs_path=None):
+    """源码行性质：code / import / comment / string / blank / oor（越界）。
+
+    v1.5.2：先走**语法层判定**（`dev_langs.line_kind_ts`）——它能识别"字符串/块注释内的行"，
+    即被 '''…''' / /* … */ 包住的"注释掉的代码"（文本启发式看着它就是代码，是假事实的常见来源）；
+    无语法可用时（.msg/.srv 等）退化为文本启发式。"""
     if lineno < 1 or lineno > len(lines):
         return "oor"
-    s = lines[lineno - 1].strip()
-    if not s:
+    s = lines[lineno - 1]
+    if not s.strip():
         return "blank"
-    if s.startswith("#") and not s.startswith(("#define", "#include", "#pragma", "#if", "#endif", "#else", "#elif")):
+    if abs_path:
+        k = line_kind_ts(abs_path, lineno, s)
+        if k:
+            return k
+    st = s.strip()
+    if st.startswith("#") and not st.startswith(("#define", "#include", "#pragma", "#if", "#endif", "#else", "#elif")):
         # `#` 注释判定排除 C 预处理指令（#define/#include 等是实质代码行）
         return "comment"
-    if s.startswith(("import ", "from ")):
+    if st.startswith(("import ", "from ")):
         return "import"
     return "code"
 
@@ -1257,7 +1267,7 @@ def _is_def_line(s):
     return t.startswith(("def ", "async def ", "class ")) or (" = " in t)
 
 
-def _suggest_line(lines, lineno, window=8):
+def _suggest_line(lines, lineno, window=8, abs_path=None):
     """在 lineno 附近找建议行：**优先定义行**（def/class/赋值），否则退化为非空非注释行；
     方向为"先向上再向下"——手写行号偏大的情形远多于偏小（常把注释块行尾/空行当锚点）。"""
     n = len(lines)
@@ -1266,7 +1276,7 @@ def _suggest_line(lines, lineno, window=8):
             for cand in (lineno - d, lineno + d):
                 if not (1 <= cand <= n):
                     continue
-                kind = _line_kind(lines, cand)
+                kind = _line_kind(lines, cand, abs_path)
                 if kind not in ("code", "import"):
                     continue
                 if want_def and kind == "code" and not _is_def_line(lines[cand - 1]):
@@ -1299,10 +1309,11 @@ def ref_line_issues(inv_data, out, fix=False):
             except OSError:
                 continue
             i = int(line)
-            kind = _line_kind(lines, i)
+            abs_path = os.path.join(root, p)
+            kind = _line_kind(lines, i, abs_path)
             if kind == "code":
                 continue
-            # 自动修仅限"明确错误"：空行 / 越界；注释与 import 行只提示（避免误改正当引用）
+            # 自动修仅限"明确错误"：空行 / 越界；注释/字符串/import 行只提示（避免误改正当引用）
             auto = kind in ("blank", "oor")
             if kind == "import":
                 # 取引用所在行 + 上一行作为上下文（说明词可能跨行）
@@ -1312,7 +1323,7 @@ def ref_line_issues(inv_data, out, fix=False):
                 ctx = (text[prev_ls:ls] + text[ls: le if le != -1 else len(text)]).lower()
                 if any(k in ctx for k in ("import", "导入", "依赖", "依赖项", "引入", "引用")):
                     continue          # 正当引用 import 行
-            sug = _suggest_line(lines, i)
+            sug = _suggest_line(lines, i, abs_path=abs_path)
             issues.append({"doc": rel, "ref": "%s:%d" % (p, i), "kind": kind,
                            "file": p, "line": i, "suggest": sug, "auto": auto})
             if fix and auto and sug and sug != i:
@@ -1483,7 +1494,7 @@ def cmd_check(inv_data, out, drift, root=None, strict=False):
               ("plan_missing_page(页面树应有但未生成)", rep["plan_missing_pages"], "运行 extract --layer all"),
               ("section_missing(页缺必需章节)", rep["section_missing"], "运行 brief --page <slug> 取工单补齐"),
               ("ref_file_missing(引用文件不在项目全集)", rep["ref_errors"], "核对 file 路径或删除编造引用"),
-              ("ref_line_suspect(引用行号指向空行/注释行)",
+              ("ref_line_suspect(引用行号指向空行/注释/字符串（含注释掉的代码）)",
                ["%s → %s" % (it["doc"], it["ref"]) for it in (rep.get("ref_line_issues") or [])],
                "运行 fixrefs --write 自动修正"))
     if strict:
@@ -1505,6 +1516,13 @@ def cmd_check(inv_data, out, drift, root=None, strict=False):
                 print("    - %s" % it)
             if len(items) > 20:
                 print("    ... 共 %d" % len(items))
+    build_issues = inv_data.get("build_issues") or []
+    if build_issues:
+        print("[build_decl_missing(CMake 声明但文件不存在——**项目构建风险**，非文档缺陷，不计失败)] %d 项:"
+              % len(build_issues))
+        for it in build_issues[:10]:
+            print("    - %s（%s）：%s" % (it["name"], it["module_path"],
+                                          "、".join(it["missing"][:5])))
     if warns and not strict:
         print("[warn] %d 项（普通模式提示；交付须 --strict 全绿）:" % len(warns))
         for w in warns[:10]:
@@ -1591,6 +1609,110 @@ BRIEF_CHECKLIST = ["AI-FILL 残留 0", "每节 ≥1 条 file:line", "引用的�
                    "组件名 ⊆ 语义地图 components", "上列登记项全部出现", "示例注明来源"]
 
 
+# ---------------- 卡片证据候选（v1.5.2，供 brief 工单）----------------
+# 目的：把"该引用哪里"变成给定素材，避免填卡者自行推断（曾把**调用点**注释误配给定义处）。
+_BANNER_RE = re.compile(r"^[=\-*/\s]*$|^(declare|definition)s?\s+for\s+\w+$", re.I)
+
+
+def _src_lines(root, rel):
+    try:
+        with open(os.path.join(root, rel), encoding="utf-8", errors="replace") as fh:
+            return fh.read().splitlines()
+    except OSError:
+        return []
+
+
+def _leading_comments(lines, lineno, limit=2):
+    """定义行紧邻上方注释块（过滤 `//****`、`//definition for functions` 之类横幅）。"""
+    out, i = [], lineno - 2
+    while i >= 0 and len(out) < limit:
+        s = lines[i].strip()
+        if s.startswith(("//", "#", "/*", "*")):
+            t = s.lstrip("/*#").strip()
+            if t and not _BANNER_RE.match(t):
+                out.insert(0, "L%d %s" % (i + 1, t[:90]))
+            i -= 1
+        elif not s and out:
+            i -= 1
+        else:
+            break
+    return out
+
+
+def _trailing_decl_comment(lines, lineno, abs_path):
+    """定义行**行尾**注释；仅当该行确为声明/定义行（语法判定）才采纳——
+    调用点行尾注释（`f(x);//说明`）不算定义处证据。"""
+    if not (1 <= lineno <= len(lines)):
+        return None
+    s = lines[lineno - 1]
+    mark = "//" if "//" in s else ("#" if "#" in s else None)
+    if not mark:
+        return None
+    idx = s.find(mark)
+    text = s[idx + len(mark):].strip()
+    if not text or idx == 0 or not is_decl_line(abs_path, lineno):
+        return None
+    return "L%d %s" % (lineno, text[:90])
+
+
+def _field_comments(lines, lineno, limit=3):
+    """结构体/类字段的行尾注释（最多 3 条）。
+
+    必须在本结构体的**闭合 `}`** 处停止——否则会越界采到后面结构体的字段注释
+    （实测：`ServiceAck` 拿到了 `JoystickCommand` 的字段说明）。"""
+    out, started = [], False
+    for i in range(lineno - 1, min(lineno + 30, len(lines))):
+        s = lines[i].strip()
+        if "{" in s:
+            started = True
+        if started and s.startswith("}"):
+            break
+        m = re.search(r"\b(\w+)\s*;\s*//\s*(.+)$", s)
+        if m:
+            out.append("L%d %s — %s" % (i + 1, m.group(1), m.group(2).strip()[:70]))
+        if len(out) >= limit:
+            break
+    return out
+
+
+def evidence_hints(inv_data, out, page):
+    """页内每张卡片的**候选证据**（只提示、不写入文档）。
+    返回 {锚点ID: {"qname":..., "items":[证据串, ...]}}；无证据的卡片不出现。"""
+    root = inv_data.get("root") or ""
+    mid = page.get("module_id") or ""
+    if not mid:
+        return {}
+    cache, res = {}, {}
+    for s in inv_data.get("symbols", []):
+        if s.get("module") != mid:
+            continue
+        rel, ln = s.get("file"), int(s.get("line") or 0)
+        if not rel or not ln:
+            continue
+        if rel not in cache:
+            cache[rel] = _src_lines(root, rel)
+        lines = cache[rel]
+        abs_path = os.path.join(root, rel)
+        items = []
+        lead = _leading_comments(lines, ln)
+        if lead:
+            items.append("前置注释：" + " ｜ ".join(lead))
+        tc = _trailing_decl_comment(lines, ln, abs_path)
+        if tc:
+            items.append("声明行尾注释：" + tc)
+        if rel.lower().endswith(".py"):
+            doc = (docstrings_by_def_line(abs_path) or {}).get(ln)
+            if doc:
+                items.append("docstring：" + doc)
+        if s.get("kind") == "class":
+            fc = _field_comments(lines, ln)
+            if fc:
+                items.append("字段注释：" + " ｜ ".join(fc))
+        if items:
+            res[s["id"]] = {"qname": s.get("qname"), "items": items}
+    return res
+
+
 def brief_data(inv_data, out, page):
     typ = page.get("type") or ""
     mid = page.get("module_id") or ""
@@ -1631,6 +1753,7 @@ def brief_data(inv_data, out, page):
         "registered": [{"id": it.get("id"), "name": it.get("name"), "file": it.get("file"),
                         "line": it.get("line"), "confidence": it.get("confidence")} for it in regs],
         "tests": sorted(set(tests)),
+        "evidence": evidence_hints(inv_data, out, page),
         "requirements": list(BRIEF_HINTS.get(typ, [])),
         "checklist": list(BRIEF_CHECKLIST),
     }
@@ -1717,6 +1840,18 @@ def cmd_brief(inv_data, root, out, page_slug, as_json=False):
             print("  %s" % a)
         if len(anchors) > 40:
             print("  … 共 %d 项" % len(anchors))
+        print("")
+    if d.get("evidence"):
+        print("候选证据（写卡片「用途/参数/返回/错误」时优先引用这些；**切勿**用调用点注释解释定义处功能）：")
+        for aid, ev in sorted(d["evidence"].items(), key=lambda kv: kv[0])[:25]:
+            print("  @%s %s" % (aid, ev.get("qname") or ""))
+            for it in ev["items"]:
+                print("     - %s" % it)
+        if len(d["evidence"]) > 25:
+            print("  … 共 %d 张卡片有候选证据" % len(d["evidence"]))
+        print("")
+    else:
+        print("候选证据：（本页卡片未采到注释/docstring；请读源码原文后再写，勿凭命名推断）")
         print("")
     if d["tests"]:
         print("模块测试（示例应取自这里）：%s" % "、".join(d["tests"][:8]))

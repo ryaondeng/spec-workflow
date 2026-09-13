@@ -543,6 +543,33 @@ class PlanAndBrief(TmpCase):
                 fh.write(text)
         self.assertEqual(dev_docs.cmd_check(data, out, False, root, strict=True), 0)
 
+    def test_evidence_hints_excludes_call_site_comment(self):
+        """v1.5.2：候选证据只取定义处（前置注释/docstring/声明行尾），**不得**用调用点注释。"""
+        import shutil
+        import tempfile
+        tmp = tempfile.mkdtemp(prefix="devdocs_ev_")
+        try:
+            files = {
+                "src/a.cpp": "void pubRecg(unsigned char cmd) {\n    helper();\n}\n",
+                "src/b.cpp": "void use() {\n    pubRecg(1);//停止识别\n}\n",
+                "src/c.cpp": "//设置阈值\nvoid setTh(unsigned int v) {\n    v = 1;\n}\n",
+            }
+            for rel, body in files.items():
+                fp = os.path.join(tmp, rel)
+                os.makedirs(os.path.dirname(fp), exist_ok=True)
+                with open(fp, "w", encoding="utf-8", newline="\n") as fh:
+                    fh.write(body)
+            out = dev_docs.outdir(tmp, "dev-docs")
+            data = dev_docs.cmd_inventory(tmp, out, [], quiet=True)
+            page = {"slug": "reference/src", "type": "reference",
+                    "module_id": data["modules"][0]["id"]}
+            ev = dev_docs.evidence_hints(data, out, page)
+            joined = " | ".join(i for e in ev.values() for i in e["items"])
+            self.assertNotIn("停止识别", joined)     # 调用点注释不能作为定义处证据
+            self.assertIn("设置阈值", joined)        # 定义处前置注释应被采到
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
     def test_index_coverage_rendered_on_extract(self):
         root, out, data = self._init()
         dev_docs.cmd_plan(root, out, write=True)

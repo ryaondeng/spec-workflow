@@ -4,7 +4,7 @@
 - function_definition（name 字段为 word）→ kind=function
 - scan_deps：source ./x.sh 的依赖字面量
 """
-from .base import LanguageAdapter, get_parser, node_text
+from .base import LanguageAdapter, node_text, parse_tree
 
 
 class BashTreeSitterAdapter(LanguageAdapter):
@@ -13,7 +13,7 @@ class BashTreeSitterAdapter(LanguageAdapter):
     grammar = "bash"
 
     def _scan(self, data, rel_path, module_id, counters):
-        root = get_parser(self.grammar).parse(data).root_node
+        tree, root = parse_tree(self.grammar, data)
         symbols, deps = [], []
         for node in _walk(root):
             if node.type == "function_definition":

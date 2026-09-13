@@ -6,7 +6,7 @@
 - scan_deps：import 语句源
 - 语法：.js/.mjs/.cjs → javascript；.ts → typescript；.tsx → tsx
 """
-from .base import LanguageAdapter, get_parser, node_text
+from .base import LanguageAdapter, node_text, parse_tree
 
 
 def _grammar_for(ext):
@@ -24,7 +24,7 @@ class JsTsTreeSitterAdapter(LanguageAdapter):
 
     def _scan(self, data, rel_path, module_id, counters):
         grammar = _grammar_for("." + rel_path.lower().rsplit(".", 1)[-1])
-        root = get_parser(grammar).parse(data).root_node
+        tree, root = parse_tree(grammar, data)
         symbols, deps = [], []
         cls_stack = []
 
@@ -85,7 +85,7 @@ class JsTsTreeSitterAdapter(LanguageAdapter):
 
     def scan_deps(self, data):
         # 复用主扫描（deps 已在 _scan 中收集）；此处独立解析避免状态耦合
-        root = get_parser("javascript").parse(data).root_node
+        tree, root = parse_tree("javascript", data)
         out = []
         for node in _walk(root):
             if node.type == "import_statement":

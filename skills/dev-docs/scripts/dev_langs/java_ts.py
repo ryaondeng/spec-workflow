@@ -9,7 +9,7 @@
 """
 import re
 
-from .base import LanguageAdapter, get_parser, node_text
+from .base import LanguageAdapter, node_text, parse_tree
 
 _JAVA_ANN = re.compile(
     r"@(GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping|RequestMapping)\s*"
@@ -25,7 +25,7 @@ class JavaTreeSitterAdapter(LanguageAdapter):
     grammar = "java"
 
     def _scan(self, data, rel_path, module_id, counters):
-        root = get_parser(self.grammar).parse(data).root_node
+        tree, root = parse_tree(self.grammar, data)
         text = data.decode("utf-8", "replace")
         symbols, endpoints = [], []
         cls_stack = []
@@ -84,7 +84,7 @@ class JavaTreeSitterAdapter(LanguageAdapter):
         return symbols, endpoints, [], []
 
     def scan_deps(self, data):
-        root = get_parser(self.grammar).parse(data).root_node
+        tree, root = parse_tree(self.grammar, data)
         out = []
         for node in walk_all(root):
             if node.type == "import_declaration":

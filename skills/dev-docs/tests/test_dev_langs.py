@@ -247,6 +247,45 @@ class CatkinModules(unittest.TestCase):
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+class BuildDeclConsistency(unittest.TestCase):
+    """v1.5.2：CMake 声明 vs 实际文件一致性（治"文档照抄声明、读者照做会编译失败"）。"""
+
+    def _mk(self, files):
+        import tempfile
+        tmp = tempfile.mkdtemp(prefix="devlangscmake_")
+        self.addCleanup(__import__("shutil").rmtree, tmp, True)
+        for rel, body in files.items():
+            fp = os.path.join(tmp, rel)
+            os.makedirs(os.path.dirname(fp), exist_ok=True)
+            with open(fp, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(body)
+        return tmp
+
+    def test_missing_declared_files_reported(self):
+        tmp = self._mk({
+            "src/p/package.xml": "<package><name>p</name></package>",
+            "src/p/CMakeLists.txt": ("add_message_files(\n  FILES\n  a.msg\n  b.msg\n)\n"
+                                     "add_executable(node src/main.cpp)\n"),
+            "src/p/msg/a.msg": "uint8 x\n",          # 存在（位于 msg/ 下）
+            "src/p/src/main.cpp": "int main(){return 0;}\n",
+        })
+        data = inv.build_inventory(tmp, project_type="catkin")
+        issues = data.get("build_issues") or []
+        self.assertEqual(len(issues), 1)
+        self.assertEqual(issues[0]["missing"], ["b.msg"])   # 只报确实缺失的
+        self.assertTrue(any("build_decl_missing" in (n.get("note") or "")
+                            for n in data["confidence"]["notes"]))  # 同时进 confidence
+
+    def test_all_declared_files_present(self):
+        tmp = self._mk({
+            "src/p/package.xml": "<package><name>p</name></package>",
+            "src/p/CMakeLists.txt": "add_service_files(FILES s.srv)\n",
+            "src/p/srv/s.srv": "bool ok\n---\nbool r\n",
+        })
+        data = inv.build_inventory(tmp, project_type="catkin")
+        self.assertEqual(data.get("build_issues"), [])
+
+
 class TestFileRule(unittest.TestCase):
     """测试文件跨语言统一口径：只入测试索引，不生成符号卡片。"""
 
@@ -283,6 +322,69 @@ class TestFileRule(unittest.TestCase):
             self.assertEqual([t["file"] for t in data["tests"]], ["src/p/src/test.cpp"])
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+class LineKindTs(unittest.TestCase):
+    """v1.5.2：语法层行性质判定——治"引用落在注释/字符串里"的假事实。"""
+
+    def _mk(self, content, name):
+        import tempfile
+        tmp = tempfile.mkdtemp(prefix="devlangslk_")
+        self.addCleanup(__import__("shutil").rmtree, tmp, True)
+        p = os.path.join(tmp, name)
+        with open(p, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(content)
+        return p
+
+    def test_python_triple_quoted_block_is_string(self):
+        from dev_langs import line_kind_ts
+        p = self._mk('x = 1\n"""\ndead = 2\n"""\ny = 3\n', "a.py")
+        lines = open(p, encoding="utf-8").read().splitlines()
+        self.assertEqual(line_kind_ts(p, 3, lines[2]), "string")   # 三引号内的"注释掉的代码"
+        self.assertIsNone(line_kind_ts(p, 1, lines[0]))
+        self.assertIsNone(line_kind_ts(p, 5, lines[4]))
+
+    def test_python_indented_comment_is_comment(self):
+        from dev_langs import line_kind_ts
+        p = self._mk("def f():\n    pass\n    # note\n    return 1\n", "b.py")
+        lines = open(p, encoding="utf-8").read().splitlines()
+        self.assertEqual(line_kind_ts(p, 3, lines[2]), "comment")  # 缩进注释（列 0 在 block 内）
+        self.assertIsNone(line_kind_ts(p, 4, lines[3]))
+
+    def test_cpp_block_comment_is_comment(self):
+        from dev_langs import line_kind_ts
+        p = self._mk("int a(){return 1;}\n/*\nint dead(){return 0;}\n*/\nint b(){return 2;}\n", "c.cpp")
+        lines = open(p, encoding="utf-8").read().splitlines()
+        self.assertEqual(line_kind_ts(p, 3, lines[2]), "comment")
+        self.assertIsNone(line_kind_ts(p, 1, lines[0]))
+        self.assertIsNone(line_kind_ts(p, 5, lines[4]))
+
+    def test_code_line_with_trailing_comment_or_string_is_code(self):
+        from dev_langs import line_kind_ts
+        p = self._mk('void f();//说明\nconst char *s = "abc";\n', "d.cpp")
+        lines = open(p, encoding="utf-8").read().splitlines()
+        self.assertIsNone(line_kind_ts(p, 1, lines[0]))   # 行尾注释：仍算代码行
+        self.assertIsNone(line_kind_ts(p, 2, lines[1]))   # 行中含字符串：仍算代码行
+
+    def test_docstring_and_literal_lines_are_exempt(self):
+        from dev_langs import line_kind_ts
+        p = self._mk('"""module doc\nmore\n"""\nDATA = {\n    "k": "v",\n}\n', "f.py")
+        lines = open(p, encoding="utf-8").read().splitlines()
+        self.assertIsNone(line_kind_ts(p, 1, lines[0]))   # 模块文档字符串起始行：正当锚点
+        self.assertIsNone(line_kind_ts(p, 3, lines[2]))   # 文档字符串结束行
+        self.assertIsNone(line_kind_ts(p, 5, lines[4]))   # dict 字面量行（含字符串但非整行）
+
+    def test_doxygen_comment_is_exempt(self):
+        from dev_langs import line_kind_ts
+        p = self._mk("int a;\n/**\n * doc for b\n */\nint b;\n", "g.cpp")
+        lines = open(p, encoding="utf-8").read().splitlines()
+        for rowno in (2, 3, 4):
+            self.assertIsNone(line_kind_ts(p, rowno, lines[rowno - 1]))
+
+    def test_no_grammar_type_returns_none(self):
+        from dev_langs import line_kind_ts
+        p = self._mk("# comment\nuint8 a\n", "e.msg")
+        self.assertIsNone(line_kind_ts(p, 2, "uint8 a"))
 
 
 class DeterminismAndRecon(unittest.TestCase):

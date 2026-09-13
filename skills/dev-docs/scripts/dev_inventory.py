@@ -12,6 +12,7 @@ import ast
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
@@ -190,6 +191,50 @@ def _rel(root, path):
 
 
 # ---------------- 模块划分 ----------------
+
+def _cmake_declared_files(pkg_dir):
+    """CMakeLists 声明的消息/服务/可执行源文件（原文相对包目录）。"""
+    path = os.path.join(pkg_dir, "CMakeLists.txt")
+    if not os.path.isfile(path):
+        return []
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+    except OSError:
+        return []
+    out = []
+    text = re.sub(r"#[^\n]*", "", text)      # 先剥掉注释：catkin 模板注释里有示例声明（Message1.msg 等）
+    for m in re.finditer(r"add_(?:message|service|action)_files\s*\((.*?)\)", text, re.S):
+        out.extend(re.findall(r"[\w./\-]+\.(?:msg|srv|action)", m.group(1)))
+    for m in re.finditer(r"add_executable\s*\(\s*[\w\-]+\s+([^)]*)\)", text, re.S):
+        out.extend(re.findall(r"[\w./\-]+\.(?:cpp|cc|cxx|c|py)", m.group(1)))
+    return out
+
+
+def _decl_file_exists(pkg_dir, rel):
+    """声明的文件是否存在：依次尝试原路径、`msg/`、`srv/`、包根下的同名文件。"""
+    base = os.path.basename(rel)
+    for cand in (rel, os.path.join("msg", base), os.path.join("srv", base), base):
+        if os.path.isfile(os.path.join(pkg_dir, cand)):
+            return True
+    return False
+
+
+def build_decl_issues(root, pkgs):
+    """构建声明一致性：CMakeLists 声明了但实际不存在的文件（构建风险）。
+
+    典型实例：`src/yolov7/CMakeLists.txt` 声明 `ncuCmd.msg` / `recTargetInfo.msg`，
+    但 `src/yolov7/msg/` 目录缺失 —— 文档若照抄声明，读者按文档 `catkin_make` 会失败。
+    这是**项目自身缺陷**（文档无法修复），故只报不拦（不纳入 check 的 FAIL 组）。"""
+    issues = []
+    for p in pkgs:
+        pkg_dir = os.path.join(root, p["path"])
+        missing = [f for f in _cmake_declared_files(pkg_dir) if not _decl_file_exists(pkg_dir, f)]
+        if missing:
+            issues.append({"module_path": p["path"], "name": p["name"],
+                           "missing": sorted(set(missing))})
+    return issues
+
 
 def _catkin_packages(root, extra):
     """扫描 package.xml（catkin 包边界）：返回 [{path(相对), name}]，按路径排序。"""
@@ -404,6 +449,12 @@ def build_inventory(root, extra_exclude=None, project_type="auto"):
     interfaces = []
     code_file_hashes = {}
     confidence_notes = []
+    # 构建声明一致性（catkin：CMakeLists 声明 vs 实际文件）——v1.5.2
+    build_issues = build_decl_issues(root, _catkin_packages(root, extra)) if ptype == "catkin" else []
+    for _it in build_issues:
+        confidence_notes.append({
+            "file": "%s/CMakeLists.txt" % _it["module_path"],
+            "note": "build_decl_missing %s" % "、".join(_it["missing"][:5])})
     counters = {"fun": 0, "cls": 0, "api": 0, "msg": 0, "srv": 0, "top": 0, "svc": 0, "nde": 0}
     file_mod = {}          # rel -> module id（含跳过符号的文件，供 include 依赖映射）
     include_records = []   # (rel, [include 字面量]) —— C++/JS 等适配器提供
@@ -484,6 +535,7 @@ def build_inventory(root, extra_exclude=None, project_type="auto"):
         "code_file_hashes": code_file_hashes,
         "files": files,
         "files_hashes": files_hashes,
+        "build_issues": build_issues,
         "confidence": {"notes": confidence_notes},
     }
     return inventory
