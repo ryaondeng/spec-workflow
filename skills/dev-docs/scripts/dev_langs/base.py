@@ -265,6 +265,77 @@ def docstrings_by_def_line(abs_path):
     return out
 
 
+# ---------------- 全库引用计数（v1.5.3，治"由命名推断用途"）----------------
+# 目的：宏/函数/类被引用了几次是**机器可知的事实**（曾把全库零引用的宏写成"换算约定"，
+# 见方案-提取质量机制化.md P0-4）。计数口径：tree-sitter **语义标识符节点**——注释与
+# 字符串天然不含此类节点，不会被误计；声明处自身的出现由调用方按声明位点数扣减，
+# 得到"声明之外的引用数"（refs）。各语法包的标识符节点名集中在一张表，未列出的
+# 语法退化为 ("identifier",)（保守：宁少计不多计——refs 偏小只会多提示，不会漏提示）。
+_IDENT_NODE_KINDS = {
+    "c": ("identifier", "field_identifier", "type_identifier", "namespace_identifier",
+          "operator_name"),
+    "cpp": ("identifier", "field_identifier", "type_identifier", "namespace_identifier",
+            "operator_name"),
+    "java": ("identifier", "type_identifier"),
+    "javascript": ("identifier", "property_identifier", "shorthand_property_identifier"),
+    "typescript": ("identifier", "property_identifier", "shorthand_property_identifier",
+                   "type_identifier"),
+    "tsx": ("identifier", "property_identifier", "shorthand_property_identifier",
+            "type_identifier"),
+    "bash": ("command_name", "variable_name"),
+}
+
+_IDENT_COUNT_CACHE = {}   # abs_path -> {name: count}（纯数据，不驻留语法树对象）
+_MACRO_CACHE = {}         # abs_path -> [(name, line)]（仅 C/C++ #define）
+
+
+def identifier_counts(abs_path):
+    """该文件内标识符 -> 出现次数（进程内缓存；无 tree-sitter 语法的类型返回空表）。"""
+    if abs_path in _IDENT_COUNT_CACHE:
+        return _IDENT_COUNT_CACHE[abs_path]
+    out = {}
+    grammar = grammar_for_path(abs_path)
+    if grammar:
+        kinds = _IDENT_NODE_KINDS.get(grammar, ("identifier",))
+        try:
+            with open(abs_path, "rb") as fh:
+                data = fh.read()
+            tree, root = parse_tree(grammar, data)
+            for node in walk(root):
+                if node.type in kinds:
+                    name = data[node.start_byte:node.end_byte].decode("utf-8", "replace")
+                    out[name] = out.get(name, 0) + 1
+        except (OSError, SystemExit):
+            out = {}
+    _IDENT_COUNT_CACHE[abs_path] = out
+    return out
+
+
+def macro_defs(abs_path):
+    """C/C++ `#define` 名列表 `[(name, line)]`（进程内缓存；其他语言返回 []）。
+
+    宏不是适配器扫描的符号（防宏爆炸），但零引用判定必须覆盖它——
+    P0-4 的三个"换算约定"宏全是 #define。"""
+    if abs_path in _MACRO_CACHE:
+        return _MACRO_CACHE[abs_path]
+    out = []
+    grammar = grammar_for_path(abs_path)
+    if grammar in ("c", "cpp"):
+        try:
+            with open(abs_path, "rb") as fh:
+                data = fh.read()
+            tree, root = parse_tree(grammar, data)
+            for node in walk(root):
+                if node.type in ("preproc_def", "preproc_function_def"):
+                    nm = node.child_by_field_name("name")
+                    if nm is not None:
+                        out.append((node_text(data, nm), node.start_point[0] + 1))
+        except (OSError, SystemExit):
+            out = []
+    _MACRO_CACHE[abs_path] = out
+    return out
+
+
 def walk(node):
     """深度优先遍历（含自身），顺序稳定。"""
     stack = [node]

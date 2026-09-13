@@ -392,6 +392,96 @@ class P3Case(TmpCase):
         self.assertIn("src/a.py", d["changed_files"])
 
 
+class TestRefCounts(TmpCase):
+    """v1.5.3：全库引用计数 refs / zero_refs——治"由命名推断用途"（P0-4）。
+    refs = 标识符全库出现次数 − 声明位点数（0 = 声明过但从未被引用）。"""
+
+    APP = {
+        "src/app.py": (
+            "class UserService:\n"
+            "    def __init__(self):\n"
+            "        pass\n"
+            "\n"
+            "    def create(self, name):\n"
+            "        return name\n"
+            "\n"
+            "def helper(x):\n"
+            "    return x * 2\n"
+            "\n"
+            "def main():\n"
+            "    helper(1)\n"
+            "\n"
+            "def dead_fn():\n"
+            "    pass\n"
+        ),
+        "src/defs.h": "#define DEAD_MACRO 25\n",
+    }
+
+    def test_ref_counts_and_zero_refs(self):
+        write_tree(self.tmp, self.APP)
+        data = inv.build_inventory(self.tmp)
+        refs = {s["qname"]: s["refs"] for s in data["symbols"]}
+        self.assertEqual(refs.get("helper"), 1)        # 定义 + main() 内一次调用
+        self.assertEqual(refs.get("dead_fn"), 0)
+        self.assertEqual(refs.get("main"), 0)          # 计数为 0，但不进 zero_refs（入口名）
+        zero = {z["name"] for z in data["zero_refs"]}
+        self.assertIn("dead_fn", zero)
+        self.assertIn("create", zero)
+        self.assertIn("DEAD_MACRO", zero)              # 零引用宏（P0-4 主场景）
+        self.assertNotIn("main", zero)
+        self.assertNotIn("__init__", zero)             # 协议方法被框架隐式调用
+        self.assertNotIn("helper", zero)
+        kinds = {z["name"]: z["kind"] for z in data["zero_refs"]}
+        self.assertEqual(kinds.get("DEAD_MACRO"), "macro")
+        self.assertEqual(kinds.get("dead_fn"), "symbol")
+
+    def test_card_and_index_annotate_zero_refs(self):
+        write_tree(self.tmp, self.APP)
+        data = inv.build_inventory(self.tmp)
+        dead = [s for s in data["symbols"] if s["qname"] == "dead_fn"][0]
+        live = [s for s in data["symbols"] if s["qname"] == "helper"][0]
+        self.assertIn("refs=0", dev_docs._sym_card(dead))
+        self.assertNotIn("refs=0", dev_docs._sym_card(live))
+        rows = dev_docs.ref_index_rows(data, dead["module"])
+        dead_row = [r for r in rows if "dead_fn" in r][0]
+        live_row = [r for r in rows if "helper" in r][0]
+        self.assertIn("refs:0", dead_row)
+        self.assertNotIn("refs:0", live_row)
+
+    def test_page_zero_refs_and_brief(self):
+        write_tree(self.tmp, self.APP)
+        root, out = self.tmp, dev_docs.outdir(self.tmp, "dev-docs")
+        data = dev_docs.cmd_inventory(root, out, [], quiet=True)
+        dev_docs.save_plan(out, dev_docs.build_plan(data, out))
+        page = [p for p in dev_docs.load_plan(out)["pages"] if p["type"] == "reference"][0]
+        d = dev_docs.brief_data(data, out, page)
+        self.assertIn("dead_fn", d["zero_refs"])
+        self.assertIn("DEAD_MACRO", d["zero_refs"])    # 页面源文件里的零引用宏也进工单
+        self.assertNotIn("main", d["zero_refs"])
+        sym = [s for s in d["symbols"] if s["qname"] == "dead_fn"][0]
+        self.assertEqual(sym["refs"], 0)
+
+    def test_zero_ref_assert_detection(self):
+        write_tree(self.tmp, self.APP)
+        root, out = self.tmp, dev_docs.outdir(self.tmp, "dev-docs")
+        data = dev_docs.cmd_inventory(root, out, [], quiet=True)
+        dead = [s for s in data["symbols"] if s["qname"] == "dead_fn"][0]
+        fp = os.path.join(out, "reference", "src.md")
+        os.makedirs(os.path.dirname(fp), exist_ok=True)
+        card = ("### dead_fn\n\n"
+                "- 签名：`def dead_fn()`（file src/app.py:%d, evidence: 事实）<!-- @%s -->\n"
+                "- 用途 / 参数 / 返回 / 错误：把某个东西翻倍\n" % (dead["line"], dead["id"]))
+        with open(fp, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(card)
+        hits = dev_docs.zero_ref_asserts(data, out)
+        self.assertEqual(len(hits), 1)
+        self.assertIn(dead["id"], hits[0])
+        # 未填语义（TODO 占位）不构成断言
+        with open(fp, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(card.replace("把某个东西翻倍", dev_docs.MARK))
+        self.assertEqual(dev_docs.zero_ref_asserts(data, out), [])
+
+
 class PlanAndBrief(TmpCase):
     """v1.4：页面树（plan）/ 页级工单（brief）/ 结构门禁。"""
 

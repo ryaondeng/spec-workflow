@@ -387,6 +387,47 @@ class LineKindTs(unittest.TestCase):
         self.assertIsNone(line_kind_ts(p, 2, "uint8 a"))
 
 
+class RefCounts(unittest.TestCase):
+    """v1.5.3：全库引用计数基建（标识符计数 + C/C++ 宏定义采集）。"""
+
+    def _mk(self, content, name):
+        import tempfile
+        tmp = tempfile.mkdtemp(prefix="devlangsrefs_")
+        self.addCleanup(__import__("shutil").rmtree, tmp, True)
+        p = os.path.join(tmp, name)
+        with open(p, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(content)
+        return p
+
+    def test_identifier_counts_excludes_comments_and_strings(self):
+        from dev_langs import identifier_counts
+        p = self._mk('def dead():\n    pass\n'
+                     '# dead mentioned in comment\n'
+                     's = "dead in string"\n'
+                     'x = dead()\n', "a.py")
+        c = identifier_counts(p)
+        self.assertEqual(c.get("dead"), 2)     # def 行 + 调用行；注释/字符串不计
+        self.assertEqual(c.get("x"), 1)
+
+    def test_identifier_counts_no_grammar_empty(self):
+        from dev_langs import identifier_counts
+        p = self._mk("uint8 voltage\n", "b.msg")
+        self.assertEqual(identifier_counts(p), {})
+
+    def test_macro_defs_cpp(self):
+        from dev_langs import macro_defs
+        p = self._mk("#define THREHOLD_PIX_X 25\n"
+                     "#define GO(x) move(x)\n"
+                     "int f() { return GO(1); }\n", "m.cpp")
+        self.assertEqual(macro_defs(p),
+                         [("THREHOLD_PIX_X", 1), ("GO", 2)])
+
+    def test_macro_defs_python_empty(self):
+        from dev_langs import macro_defs
+        p = self._mk("X = 1\n", "c.py")
+        self.assertEqual(macro_defs(p), [])
+
+
 class DeterminismAndRecon(unittest.TestCase):
     APP = {
         "src/a.py": "def f():\n    pass\n",

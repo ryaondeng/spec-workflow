@@ -18,7 +18,9 @@ import sys
 import xml.etree.ElementTree as ET
 from collections import OrderedDict
 
-from dev_langs import EXT_LANG, get_adapter, is_test_file  # noqa: F401  （EXT_LANG 对外兼容导出）
+from dev_langs import (  # noqa: F401  （EXT_LANG 对外兼容导出）
+    EXT_LANG, get_adapter, identifier_counts, is_test_file, macro_defs,
+)
 
 # ---------------- 常量 ----------------
 
@@ -404,6 +406,49 @@ def module_of(modules, root, filepath):
 
 # ---------------- 测试索引 ----------------
 
+# ---------------- 全库引用计数（v1.5.3 refs，治 P0-4"由命名推断用途"） ----------------
+
+def _leaf_name(qname):
+    """限定名 -> 末段裸名（Foo::bar / Foo.bar / bar -> bar）。"""
+    return re.split(r"[.:]+", qname or "")[-1] if qname else ""
+
+
+def _is_entry_like(name):
+    """入口/协议名（main、__init__ 等双下划线协议方法）：被框架/运行时隐式调用，
+    源码零引用是常态——不参与零引用提示（防误报）。"""
+    return name == "main" or (name.startswith("__") and name.endswith("__"))
+
+
+def build_ref_counts(root, extra, symbols):
+    """全库引用计数。
+
+    口径（按"裸名"合并计数——零引用判定不受同名符号干扰）：
+    - occ(name)    = 该裸名在全部代码文件的 tree-sitter 标识符出现总次数（注释/字符串天然不计）
+    - decl_occ     = 声明位点数（inventory 符号定义 + C/C++ #define；每位点计 1）
+    - refs(name)   = occ - decl_occ（声明之外的引用数；负值截为 0）
+    返回 (refs_map, zero_refs)：zero_refs 为声明过但 refs=0 的名称（入口/协议名除外），
+    按名称排序，元素 {name, kind: macro|symbol}。"""
+    occ = {}
+    macro_sites = set()
+    for fp in iter_code_files(root, extra):
+        for name, n in identifier_counts(fp).items():
+            occ[name] = occ.get(name, 0) + n
+        for name, _ln in macro_defs(fp):
+            macro_sites.add(name)
+    decl_occ = {}
+    for s in symbols:
+        leaf = _leaf_name(s.get("qname"))
+        if leaf:
+            decl_occ[leaf] = decl_occ.get(leaf, 0) + 1
+    for name in macro_sites:
+        decl_occ[name] = decl_occ.get(name, 0) + 1
+    refs_map = {n: max(0, occ.get(n, 0) - d) for n, d in decl_occ.items()}
+    zero = [{"name": n, "kind": "macro" if n in macro_sites else "symbol"}
+            for n, v in refs_map.items() if v == 0 and not _is_entry_like(n)]
+    zero.sort(key=lambda z: z["name"])
+    return refs_map, zero
+
+
 def collect_tests(root, extra_exclude):
     """测试文件与用例。返回 [{file, lang, cases:[name,...]}]。
     文件判定跨语言统一（is_test_file）；用例名仅 python 用 ast 精确提取，其它为 []（未知）。"""
@@ -510,6 +555,12 @@ def build_inventory(root, extra_exclude=None, project_type="auto"):
 
     tests = collect_tests(root, extra)
 
+    # 全库引用计数（v1.5.3 refs）：符号挂 refs（声明外引用数），零引用名称单独成表。
+    # refs=0 = 机器可知的"死代码/仅框架回调"事实——文档叙事不得凭命名臆造其用途（P0-4）。
+    refs_map, zero_refs = build_ref_counts(root, extra, symbols)
+    for s in symbols:
+        s["refs"] = refs_map.get(_leaf_name(s.get("qname")), 0)
+
     # L0 全文件清单（含未登记语言，如 .cpp/.msg/.srv）+ 非 git 漂移基线
     files, files_hashes, file_notes = iter_all_files(root, extra)
     confidence_notes.extend(file_notes)
@@ -536,6 +587,7 @@ def build_inventory(root, extra_exclude=None, project_type="auto"):
         "files": files,
         "files_hashes": files_hashes,
         "build_issues": build_issues,
+        "zero_refs": zero_refs,
         "confidence": {"notes": confidence_notes},
     }
     return inventory

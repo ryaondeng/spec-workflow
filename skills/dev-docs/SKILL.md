@@ -1,6 +1,6 @@
 ---
 name: dev-docs
-version: 1.5.2
+version: 1.5.3
 description: >
   从已有代码库反建技术文档（dev-docs）：面向没有接口/设计/架构文档的存量项目，
   用「规则提取（文件全集/机器盘点/对账漂移）+ LLM 提取（AI 通读建语义地图再按模板填文档）」双轨机制，
@@ -138,7 +138,8 @@ dev_docs.py inventory --dir <目标项目> [--out <子目录名=dev-docs>] [--ex
 dev_docs.py plan     --dir <目标项目> [--write] [--force] [--exclude 模式]
                      # 页面树（默认 dry-run 打印；--write 落盘 .devdocs-plan.json；重跑保留人工编辑）
 dev_docs.py brief    --dir <目标项目> --page <slug> [--json]
-                     # 页级填写工单：purpose / 章节 / 相关源文件 / 必覆盖锚点 / 撰写要求 / 自检清单
+                     # 页级填写工单：purpose / 章节 / 相关源文件 / 必覆盖锚点 / 候选证据 /
+                     # 零引用名称（refs=0，勿凭命名推断用途）/ 撰写要求 / 自检清单
 dev_docs.py extract  --dir <目标项目> --layer index|architecture|usage|reference|data|all \
                      [--module MOD-id] [--page <slug>]
                      # 按页面树生成 draft 骨架；只刷新 AI-GEN 机器区，区外已填语义保留
@@ -149,6 +150,7 @@ dev_docs.py register --dir <目标项目> --kind symbol|endpoint|interface --nam
                      # 人工/低置信登记（语言指纹未覆盖时用）；必须真实 file:line，登记后不算 phantom
 dev_docs.py check    --dir <目标项目> [--drift] [--strict]
                      # 对账：orphan/phantom/stale/登记腐化/缺页/缺节/引用不存在/行号异常 + 文件覆盖 + 语义填充度；
+                     # 另打印 zero_ref / zero_ref_assert（源码零引用却已断言用途；提示级，不计失败）；
                      # --strict 把 warn（AI-FILL 残留、文件未归属、行号异常）升为 ERROR；exit 0=干净
 dev_docs.py fixrefs  --dir <目标项目> [--write]
                      # 修正页内 file:line 引用：指向空行/越界=明确错误可自动修；
@@ -178,6 +180,7 @@ dev_docs.py report   --dir <目标项目>                  # 刷新 index.md 机
 8. 不得跳过页面树与工单——先 `plan` 再 `brief` 再填写；`<!-- AI-FILL -->` 未清空不得宣告完成
 9. **不得凭记忆写行号**——叙述段引用源码必须用 `brief`/盘点输出的行号，写后运行 `fixrefs` 校验（指向空行/注释即为偏移）
 10. **不得一次只做一半**——文档抽取按「一轮做完」为默认交付方式：页面叙事 + 全部符号/接口卡片语义 + 门禁全绿在同一轮内完成；**不得把剩余页/剩余卡片写成"后续候选"交付**
+11. **不得凭命名推断用途**——先查引用计数（inventory `refs` / `zero_refs`；brief 工单列出本页零引用名称）：refs=0 的名称如实写明"未被使用（dead）"或注明疑似框架回调，不得臆造功能
 
 ## 交付方式：一轮做完（默认，非例外）
 

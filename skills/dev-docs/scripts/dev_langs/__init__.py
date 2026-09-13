@@ -14,8 +14,10 @@ from .base import (  # noqa: F401
     LanguageAdapter,
     docstrings_by_def_line,
     get_parser,
+    identifier_counts,
     is_decl_line,
     is_test_file,
     line_kind_ts,
+    macro_defs,
 )
 from .registry import CODE_EXTS, EXT_LANG, adapters, available_extractors, get_adapter  # noqa: F401

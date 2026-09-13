@@ -15,7 +15,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import dev_inventory as inv   # noqa: E402
-from dev_langs import docstrings_by_def_line, is_decl_line, line_kind_ts   # noqa: E402
+from dev_langs import docstrings_by_def_line, is_decl_line, line_kind_ts, macro_defs  # noqa: E402
 
 SKILL_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEMPLATES = os.path.join(SKILL_DIR, "templates")
@@ -172,13 +172,19 @@ def meta_for(inv_data, doc_id, typ, module_id=None, status="draft"):
 def _sym_card(s, qualified=False):
     """v1.2 符号卡片：语义名标题 + 隐藏 ID 锚点。
     v1.4.1：同模块内存在同名符号（如三个脚本都有 build_arg_parser）时，
-    qualified=True 给标题加文件限定，避免重名标题造成锚点歧义。"""
+    qualified=True 给标题加文件限定，避免重名标题造成锚点歧义。
+    v1.5.3：refs=0 的符号插入引用计数行——机器可知事实，填卡者不得凭命名臆造用途。"""
     title = s["qname"] if not qualified else "%s（%s）" % (s["qname"], s["file"])
+    refs_note = ""
+    if s.get("refs") == 0:
+        refs_note = ("- 引用计数：refs=0（全库源码零引用——疑似死代码或仅供框架回调；"
+                     "叙事不得凭命名推断用途）\n")
     return ("### %s\n\n"
             "- 签名：`%s`（file %s:%s, evidence: 事实）<!-- @%s -->\n"
+            "%s"
             "- 用途 / 参数 / 返回 / 错误：%s\n"
             % (title, s.get("signature") or "?", s["file"],
-               s.get("line", 0), s["id"], SYM_TODO))
+               s.get("line", 0), s["id"], refs_note, SYM_TODO))
 
 
 def _ep_card(e):
@@ -201,7 +207,8 @@ def ref_index_rows(inv_data, module_id):
     for s in inv_data["symbols"]:
         if s["module"] != module_id:
             continue
-        rows.append("| @%s | %s | %s | — |" % (s["id"], s["qname"], s.get("kind") or "函数"))
+        note = "refs:0（源码零引用）" if s.get("refs") == 0 else "—"
+        rows.append("| @%s | %s | %s | %s |" % (s["id"], s["qname"], s.get("kind") or "函数", note))
     for e in inv_data["endpoints"]:
         if e["module"] != module_id:
             continue
@@ -1369,6 +1376,34 @@ def ai_fill_hits(out):
     return hits
 
 
+def zero_ref_asserts(inv_data, out):
+    """refs=0 且卡片语义**已填**（非 TODO）→ 叙事在断言其用途（P0-4 的残余形态）。
+    提示级（不计失败）：可能是框架回调，但叙事必须降级为「零引用，用途待证」或删除。"""
+    zero_names = {z.get("name") for z in (inv_data.get("zero_refs") or [])}
+    if not zero_names:
+        return []
+    name_of_id = {}
+    for s in inv_data.get("symbols", []):
+        if inv._leaf_name(s.get("qname")) in zero_names:
+            name_of_id[s["id"]] = s.get("qname")
+    if not name_of_id:
+        return []
+    hits = []
+    for fp in list_md(out):
+        rel = os.path.relpath(fp, out).replace("\\", "/")
+        cur = None
+        for ln in read(fp).split("\n"):
+            m = ANCHOR.search(ln)
+            if m:
+                cur = m.group(1)
+                continue
+            if cur and ln.startswith(_SEM_LINE_PREFIX):
+                if MARK not in ln and cur in name_of_id:
+                    hits.append("%s（@%s %s）" % (rel, cur, name_of_id[cur]))
+                cur = None
+    return hits
+
+
 def analyze(inv_data, out, drift=False):
     reg, doc_files = collect_registered(out)
     reg_items = load_registered(out)
@@ -1423,6 +1458,7 @@ def analyze(inv_data, out, drift=False):
         "plan_missing_pages": missing_pages, "section_missing": section_missing,
         "ref_errors": ref_errors, "ai_fill": fill_hits,
         "ref_line_issues": ref_lines,
+        "zero_ref_asserts": zero_ref_asserts(inv_data, out),
     }
 
 
@@ -1523,6 +1559,21 @@ def cmd_check(inv_data, out, drift, root=None, strict=False):
         for it in build_issues[:10]:
             print("    - %s（%s）：%s" % (it["name"], it["module_path"],
                                           "、".join(it["missing"][:5])))
+    zero = inv_data.get("zero_refs") or []
+    if zero:
+        print("[zero_ref(源码零引用的名称——疑似死代码/仅供框架回调；提示，不计失败)] %d 项:" % len(zero))
+        for z in zero[:20]:
+            print("    - %s（%s）" % (z["name"], z["kind"]))
+        if len(zero) > 20:
+            print("    ... 共 %d" % len(zero))
+    asserts = rep.get("zero_ref_asserts") or []
+    if asserts:
+        print("[zero_ref_assert(卡片已断言用途但该符号源码零引用——叙事须改写为"
+              "「零引用，用途待证」或删除；提示，不计失败)] %d 项:" % len(asserts))
+        for it in asserts[:10]:
+            print("    - %s" % it)
+        if len(asserts) > 10:
+            print("    ... 共 %d" % len(asserts))
     if warns and not strict:
         print("[warn] %d 项（普通模式提示；交付须 --strict 全绿）:" % len(warns))
         for w in warns[:10]:
@@ -1713,6 +1764,21 @@ def evidence_hints(inv_data, out, page):
     return res
 
 
+def page_zero_refs(inv_data, files, syms):
+    """本页相关的零引用名称：refs=0 的页内符号 + 页面源文件里声明的零引用宏（P0-4 场景）。"""
+    zero_all = {z.get("name") for z in (inv_data.get("zero_refs") or [])}
+    if not zero_all:
+        return []
+    names = {s.get("qname") for s in syms
+             if s.get("refs") == 0 and not inv._is_entry_like(inv._leaf_name(s.get("qname")))}
+    root = inv_data.get("root") or ""
+    for f in files:
+        for name, _ln in macro_defs(os.path.join(root, f)):
+            if name in zero_all:
+                names.add(name)
+    return sorted(n for n in names if n)
+
+
 def brief_data(inv_data, out, page):
     typ = page.get("type") or ""
     mid = page.get("module_id") or ""
@@ -1747,12 +1813,13 @@ def brief_data(inv_data, out, page):
         "sections": list(page.get("sections") or []),
         "source_files": finfo,
         "symbols": [{"id": s["id"], "qname": s.get("qname"), "file": s.get("file"),
-                     "line": s.get("line", 0)} for s in syms],
+                     "line": s.get("line", 0), "refs": s.get("refs")} for s in syms],
         "endpoints": [{"id": e["id"], "path": e.get("path"), "file": e.get("file"),
                        "line": e.get("line", 0)} for e in eps],
         "registered": [{"id": it.get("id"), "name": it.get("name"), "file": it.get("file"),
                         "line": it.get("line"), "confidence": it.get("confidence")} for it in regs],
         "tests": sorted(set(tests)),
+        "zero_refs": page_zero_refs(inv_data, files, syms),
         "evidence": evidence_hints(inv_data, out, page),
         "requirements": list(BRIEF_HINTS.get(typ, [])),
         "checklist": list(BRIEF_CHECKLIST),
@@ -1840,6 +1907,12 @@ def cmd_brief(inv_data, root, out, page_slug, as_json=False):
             print("  %s" % a)
         if len(anchors) > 40:
             print("  … 共 %d 项" % len(anchors))
+        print("")
+    if d.get("zero_refs"):
+        print("零引用名称（源码中无任何使用——疑似死代码或仅供框架回调；"
+              "**勿凭命名推断用途**，叙事如实写「未被使用」或标注 refs=0）：")
+        for n in d["zero_refs"]:
+            print("  - %s" % n)
         print("")
     if d.get("evidence"):
         print("候选证据（写卡片「用途/参数/返回/错误」时优先引用这些；**切勿**用调用点注释解释定义处功能）：")
