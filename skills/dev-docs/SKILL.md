@@ -1,6 +1,6 @@
 ---
 name: dev-docs
-version: 1.5.5
+version: 1.5.6
 description: >
   从已有代码库反建技术文档（dev-docs）：面向没有接口/设计/架构文档的存量项目，
   用「规则提取（文件全集/机器盘点/对账漂移）+ LLM 提取（AI 通读建语义地图再按模板填文档）」双轨机制，
@@ -166,7 +166,8 @@ dev_docs.py audit    --dir <目标项目> [--write] [--sample-refs 25] [--sample
 
 按需加载（阶段匹配，不整读）：
 - `references/output-contract.md` — 产物契约：目录/锚点/frontmatter/AI-GEN 区/语义地图 schema/引用与行号规则
-- `references/card-filling.md` — 卡片填写与证据标注：四级证据标签、unknown 规则、示例质量要求、风格红线
+- `references/card-filling.md` — 卡片填写与证据标注：四级证据标签、unknown 规则、引用硬规范（单行+全路径）、示例质量要求、风格红线
+- `references/doc-filler-prompt.md` — 填卡 agent 指令模板（多 agent 分工时整段内嵌 spawn）
 - `references/lang-mapping.md` — 语言支持矩阵、入口/契约发现约定、跨语言执行要点
 - `references/anti-patterns.md` — 红线 + 分层抽审 checklist
 - `references/quality-review.md` — 独立评估清单（交付前语义复核）
@@ -202,7 +203,34 @@ inventory → plan --write → extract --layer all → （逐页填叙事 + 逐�
 - 「分批」只允许两种情况：①用户显式要求先看样例；②单项目规模确实一轮装不下（须在交付时**显式列出剩余清单与原因**，不得含糊）。
 - 模块较多时"分批读码"（见 1.5）是**读取策略**，与交付轮次无关。
 
-## 交付流程：机器门禁 + 语义复核（双绿才交，v1.5.2）
+## 规模化交付：多 agent 分工（v1.5.6，pico 243 卡实战验证）
+
+**触发条件**：符号卡 > 50 张或页面 > 5 页；否则单 agent 直填（小规模并行得不偿失）。
+
+**所有权铁律**：一个产物文件一个 agent，**零共享写**（并行编辑同一文件必然冲突）；
+主 agent 保留：叙事三页（index/architecture/usage 需全局视角与横切一致性）+
+装配与门禁收口；填卡 agent 只拿 reference 页 + 对应源码清单。
+
+**标准序**（冷启动与增量一致，两处顺序硬约束）：
+1. `inventory → 语义地图 → plan → extract`——语义地图必须在 extract **之前**
+   （架构表职责列、文件覆盖率都依赖它）；
+2. 填写一律在 **draft 上**进行（红线 2 严格成立），全部填完**统一 promote**——
+   Sources 一次刷新到位，避免转正后再改正式文件；
+3. `report → check --strict → audit → 独立评估（不同上下文 agent）→ 修 P0 → 交付`。
+
+**填卡 agent 指令**：spawn 时整段内嵌 `references/doc-filler-prompt.md`，
+再追加该 agent 的目标文件与源码清单。分派时按文件符号数均衡（单 agent 上限约 140 卡）。
+
+**机制**：主 agent 用 Task 工具 spawn——小批量用同步子 agent（阻塞等结果，最稳）；
+大规模并行用 agent team（后台异步，靠轮询文件状态推进，消息回包有延迟）。
+自定义角色须在 **workspace 根** `.codebuddy/agents/<name>.md` 落定义文件
+（tools/acceptEdits 权限/纪律），spawn 时用 `subagent_path` 指向它；
+内置 code-reviewer 直接用于独立评估（不同上下文）。
+
+**团队协议**：完成汇报三件套（填写卡数 / unknown 数与原因 / 源码关键发现 ≤3 条）；
+**关键发现是强制项**——写进交付说明供用户决定是否回流代码；全部完成后 shutdown 清理团队。
+
+
 
 机器门禁只覆盖**结构、覆盖、行号位置、卡片填尽**；**语义正确性**（事实是否与源码一致、
 有无编造 / 张冠李戴 / 把死代码当现行约定）机器无法判定，必须另过一次**独立评估**：
