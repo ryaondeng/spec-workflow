@@ -482,6 +482,104 @@ class TestRefCounts(TmpCase):
         self.assertEqual(dev_docs.zero_ref_asserts(data, out), [])
 
 
+class TestSmapGate(TmpCase):
+    """v1.5.4：语义地图来源分级（治 P0-1"SQLite 数据库"乌龙）。"""
+
+    APP = {
+        "src/app.py": "def helper(x):\n    return x * 2\ndatabase = open('f')\n",
+    }
+
+    def _init(self, smap):
+        write_tree(self.tmp, self.APP)
+        root, out = self.tmp, dev_docs.outdir(self.tmp, "dev-docs")
+        data = dev_docs.cmd_inventory(root, out, [], quiet=True)
+        dev_docs.json_save(os.path.join(out, dev_docs.SEMANTIC_MAP_FILE), smap)
+        return root, out, data
+
+    def test_arch_rows_label_ai_assert(self):
+        root, out, data = self._init({
+            "modules": [{"path": "src", "responsibility": "管全部事情"}]})
+        rows = dev_docs.arch_module_rows(data, out)
+        self.assertIn("管全部事情（语义地图·AI 断言·待核）", rows)
+        # 无语义地图 → 无标注
+        os.remove(os.path.join(out, dev_docs.SEMANTIC_MAP_FILE))
+        self.assertIn("（待补：职责）", dev_docs.arch_module_rows(data, out))
+
+    def test_smap_ref_errors(self):
+        root, out, data = self._init({
+            "modules": [{"path": "src",
+                         "responsibility": "见 src/ghost.py:12 与 src/app.py:1"}]})
+        errs = dev_docs.smap_ref_errors(data, out)
+        self.assertEqual(len(errs), 1)                 # ghost.py 不存在；app.py 存在
+        self.assertIn("src/ghost.py:12", errs[0])
+
+    def test_suspect_terms_without_trace(self):
+        root, out, data = self._init({
+            "modules": [{"path": "src", "responsibility": "使用本地 SQLite 存储与任务调度"}]})
+        hits = dev_docs.smap_suspect_terms(data, out)
+        self.assertTrue(any("sqlite" in h for h in hits))   # 具体产品名提了就必须搜得到
+        self.assertTrue(any("调度" in h for h in hits))     # 泛称无任何线索 → 报
+
+    def test_suspect_terms_with_trace_no_hit(self):
+        # 代码里存在 database 标识符（语料含注释/代码）→「数据库」放行，不报
+        root, out, data = self._init({
+            "modules": [{"path": "src", "responsibility": "无数据库，状态全在内存"}]})
+        self.assertEqual(dev_docs.smap_suspect_terms(data, out), [])
+
+
+class TestAudit(TmpCase):
+    """v1.5.4：独立评估工作底稿（audit）——机器预核 + 并排对照 + 确定性抽样。"""
+
+    APP = {
+        "src/app.py": ("class UserService:\n"
+                       "    def create(self, name):\n"
+                       "        return name\n"
+                       "\n"
+                       "def helper(x):\n"
+                       "    return x * 2\n"),
+    }
+
+    def _init_with_doc(self):
+        write_tree(self.tmp, self.APP)
+        root, out = self.tmp, dev_docs.outdir(self.tmp, "dev-docs")
+        data = dev_docs.cmd_inventory(root, out, [], quiet=True)
+        sym = [s for s in data["symbols"] if s["qname"] == "helper"][0]
+        fp = os.path.join(out, "reference", "src.md")
+        os.makedirs(os.path.dirname(fp), exist_ok=True)
+        # 文档签名故意写错（与盘点不一致），并引用真实源码行
+        doc = ("### helper\n\n"
+               "- 签名：`def helper(a, b):`（file src/app.py:5, evidence: 事实）<!-- @%s -->\n"
+               "- 用途 / 参数 / 返回 / 错误：把 x 翻倍\n" % sym["id"])
+        with open(fp, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(doc)
+        return root, out, data
+
+    def test_sheet_content_and_mismatch(self):
+        root, out, data = self._init_with_doc()
+        text, stats = dev_docs.audit_sheet(data, root, out)
+        self.assertIn("抽样引用对照", text)
+        self.assertIn("文档：", text) and self.assertIn("源码：", text)
+        self.assertIn("def helper(x):", text)          # 源码原文进底稿
+        self.assertIn("行性质: code", text)
+        self.assertIn("签名与盘点不一致", text)          # 机器比对抓出
+        self.assertEqual(stats["sig_mismatch"], 1)
+
+    def test_deterministic_sampling(self):
+        root, out, data = self._init_with_doc()
+        a, _ = dev_docs.audit_sheet(data, root, out, n_refs=1)
+        b, _ = dev_docs.audit_sheet(data, root, out, n_refs=1)
+        self.assertEqual(a, b)                          # 无随机，两次同结果
+        _, stats = dev_docs.audit_sheet(data, root, out, n_refs=1, n_cards=1)
+        self.assertEqual(stats["refs_sampled"], 1)
+        self.assertEqual(stats["cards_sampled"], 1)
+
+    def test_cmd_audit_write(self):
+        root, out, data = self._init_with_doc()
+        rc = dev_docs.cmd_audit(data, root, out, write_out=True)
+        self.assertEqual(rc, 0)
+        self.assertTrue(os.path.exists(os.path.join(out, ".audit-sheet.txt")))
+
+
 class PlanAndBrief(TmpCase):
     """v1.4：页面树（plan）/ 页级工单（brief）/ 结构门禁。"""
 

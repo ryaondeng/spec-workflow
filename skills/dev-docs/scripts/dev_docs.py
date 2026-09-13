@@ -329,14 +329,16 @@ def reference_tpl_values(inv_data, m):
 
 
 def arch_module_rows(inv_data, out=None):
-    """架构页模块清单表（机器行：编号/名称/路径/职责(语义地图优先)/依赖）。"""
+    """架构页模块清单表（机器行：编号/名称/路径/职责(语义地图优先)/依赖）。
+    v1.5.4：职责来自语义地图（LLM 自由文本）时标注「AI 断言·待核」——
+    防止 AI 臆测被读者当成机器实测（P0-1：曾把"本地 SQLite 数据库"渲染成事实）。"""
     rows = []
     for m in inv_data.get("modules", []):
         resp = "（待补：职责）"
         if out:
             sm = smap_for_module(out, m)
             if sm and sm.get("responsibility"):
-                resp = sm["responsibility"]
+                resp = "%s%s" % (sm["responsibility"], AI_ASSERT_MARK)
         rows.append("| %s | %s | %s | %s | %s |"
                     % (m["id"], m["name"], m["path"], resp,
                        _deps_display(m)))
@@ -1109,10 +1111,107 @@ def cmd_register(root, out, kind, name, src, line=0, signature=None, note=None):
 
 SEMANTIC_MAP_FILE = ".semantic-map.json"
 
+# ---------------- 语义地图来源分级（v1.5.4，治 P0-1"SQLite 数据库"乌龙） ----------------
+# 语义地图是 LLM 产物（AI 断言），不是机器实测：渲染须标注来源，其内引用与重词须复核。
+AI_ASSERT_MARK = "（语义地图·AI 断言·待核）"
+
+# 重词 -> 源码痕迹线索（**全部**线索都搜不到才提示；对语料小写匹配，含注释文本）。
+# 具体产品名（sqlite 等）term==trace：文档提了、代码里搜不到 → 即报（P0-1 的直接形态）。
+_SENSITIVE_TERMS = (
+    ("sqlite", ("sqlite",)),
+    ("redis", ("redis",)),
+    ("mysql", ("mysql",)),
+    ("postgres", ("postgres", "postgresql")),
+    ("mongodb", ("mongodb", "mongo")),
+    ("数据库", ("sqlite", "mysql", "postgres", "mongodb", "database", ".db", "db_")),
+    ("缓存", ("cache", "redis", "memcache", "lru")),
+    ("调度", ("scheduler", "sched")),
+)
+_CODE_CORPUS_MAX = 8 * 1024 * 1024   # 源码痕迹语料拼接上限（防超大仓库拖慢）
+_FILE_MAX_BYTES = 2 * 1024 * 1024    # 单文件参与语料上限（与 inventory 口径一致）
+
 
 def load_semantic_map(out):
     smap = json_load(os.path.join(out, SEMANTIC_MAP_FILE))
     return smap if isinstance(smap, dict) else None
+
+
+def _smap_texts(smap):
+    """语义地图全部字符串值 -> [(路径, 文本)]（递归收集；路径如 .modules.responsibility）。"""
+    out = []
+
+    def _w(o, path):
+        if isinstance(o, dict):
+            for k, v in o.items():
+                _w(v, "%s.%s" % (path, k))
+        elif isinstance(o, list):
+            for i, v in enumerate(o):
+                _w(v, path)
+        elif isinstance(o, str):
+            out.append((path, o))
+
+    _w(smap, "")
+    return out
+
+
+def _code_corpus(inv_data, root):
+    """全部项目文件的小写拼接文本（源码痕迹语料；总量/单文件均截断）。"""
+    parts, total = [], 0
+    for f in inv_data.get("files") or []:
+        if (f.get("bytes") or 0) > _FILE_MAX_BYTES:
+            continue
+        try:
+            with open(os.path.join(root, f["path"]), encoding="utf-8", errors="replace") as fh:
+                t = fh.read().lower()
+        except OSError:
+            continue
+        parts.append(t)
+        total += len(t)
+        if total > _CODE_CORPUS_MAX:
+            break
+    return "\n".join(parts)
+
+
+def smap_ref_errors(inv_data, out):
+    """语义地图内的 file:line 引用解析不到项目文件（AI 断言产物同样不得编造引用）。提示级。"""
+    smap = load_semantic_map(out)
+    if not smap:
+        return []
+    all_files = {f["path"] for f in inv_data.get("files") or []}
+    if not all_files:
+        return []
+    errs = set()
+    for path, text in _smap_texts(smap):
+        for ref, line in REF_RE.findall(text):
+            if resolve_ref(ref.replace("\\", "/").lstrip("./"), all_files) is None:
+                errs.add("%s -> %s:%s" % (path.lstrip("."), ref, line))
+    return sorted(errs)
+
+
+def smap_suspect_terms(inv_data, out, root=None):
+    """地图自由文本出现重词（数据库/缓存/调度…）但源码无对应痕迹 → 疑 AI 臆造。提示级。
+
+    口径：具体产品名（sqlite/redis…）提了就必须搜得到；泛称（数据库/缓存/调度）任一线索
+    （标识符/文件名/外部依赖/注释文本）存在即放行——宁漏报不误报，只提示不拦截。"""
+    smap = load_semantic_map(out)
+    if not smap:
+        return []
+    root = root or inv_data.get("root") or ""
+    if not root:
+        return []
+    corpus = _code_corpus(inv_data, root)
+    for m in inv_data.get("modules") or []:
+        corpus += " " + " ".join(str(d) for d in (m.get("external_deps") or []))
+    hits = set()
+    for path, text in _smap_texts(smap):
+        low = text.lower()
+        for term, traces in _SENSITIVE_TERMS:
+            hit = term in low if term.isascii() else term in text
+            if not hit or any(t in corpus for t in traces):
+                continue
+            hits.add("%s：出现「%s」但源码无对应痕迹（线索：%s）"
+                     % (path.lstrip("."), term, "、".join(traces[:4])))
+    return sorted(hits)
 
 
 def file_coverage(inv_data, smap, out_rel=None):
@@ -1459,6 +1558,8 @@ def analyze(inv_data, out, drift=False):
         "ref_errors": ref_errors, "ai_fill": fill_hits,
         "ref_line_issues": ref_lines,
         "zero_ref_asserts": zero_ref_asserts(inv_data, out),
+        "smap_ref_errors": smap_ref_errors(inv_data, out),
+        "smap_suspect_terms": smap_suspect_terms(inv_data, out),
     }
 
 
@@ -1574,6 +1675,24 @@ def cmd_check(inv_data, out, drift, root=None, strict=False):
             print("    - %s" % it)
         if len(asserts) > 10:
             print("    ... 共 %d" % len(asserts))
+    # v1.5.4 语义地图来源分级（提示级：地图是 AI 断言产物，防其被当事实渲染）
+    if rep["has_semantic_map"]:
+        smap_refs = rep.get("smap_ref_errors") or []
+        if smap_refs:
+            print("[smap_ref_error(语义地图内 file:line 引用解析不到——AI 断言产物同样不得编造引用；"
+                  "提示，不计失败)] %d 项:" % len(smap_refs))
+            for it in smap_refs[:10]:
+                print("    - %s" % it)
+            if len(smap_refs) > 10:
+                print("    ... 共 %d" % len(smap_refs))
+        smap_terms = rep.get("smap_suspect_terms") or []
+        if smap_terms:
+            print("[smap_suspect_term(语义地图出现重词但源码无对应痕迹——疑 AI 臆造，须给出证据或删改；"
+                  "提示，不计失败)] %d 项:" % len(smap_terms))
+            for it in smap_terms[:10]:
+                print("    - %s" % it)
+            if len(smap_terms) > 10:
+                print("    ... 共 %d" % len(smap_terms))
     if warns and not strict:
         print("[warn] %d 项（普通模式提示；交付须 --strict 全绿）:" % len(warns))
         for w in warns[:10]:
@@ -1943,6 +2062,162 @@ def cmd_brief(inv_data, root, out, page_slug, as_json=False):
     return 0
 
 
+# ---------------- 独立评估工作底稿（v1.5.4 audit 命令） ----------------
+# 目的：quality-review 要求抽 ≥25 引用 / ≥15 卡片，纯手工"文档↔源码"来回翻成本高、
+# 动作不标准，流程容易被跳过（4 个 P0 即由此漏入）。audit 把机器能核的全核掉
+# （行性质 / 签名与盘点一致性 / 零引用断言 / 地图引用与重词），生成"文档原句 vs 源码原文"
+# 并排底稿，评估者只剩一件事：判断语义对不对。
+
+def _stride_sample(items, n):
+    """确定性等距抽样（不用随机：两次运行同一结果，底稿可复现）。"""
+    items = list(items)
+    if len(items) <= n:
+        return items
+    step = len(items) / float(n)
+    return [items[min(len(items) - 1, int(i * step))] for i in range(n)]
+
+
+def _doc_cards(out):
+    """正式文档里的卡片 -> {锚点ID: {doc, title, line, sig(反引号内), sem(语义行|None)}}。
+    只收签名行式卡片（锚点行含反引号）；符号索引表行无反引号，不误收。"""
+    cards = {}
+    for fp in list_md(out):
+        rel = os.path.relpath(fp, out).replace("\\", "/")
+        title, lines = None, read(fp).split("\n")
+        for i, ln in enumerate(lines):
+            if ln.startswith("### "):
+                title = ln[4:].strip()
+            m = ANCHOR.search(ln)
+            if not m:
+                continue
+            sm = re.search(r"`([^`]+)`", ln)
+            if not sm:
+                continue
+            sem = None
+            for j in range(i + 1, min(i + 4, len(lines))):
+                if lines[j].startswith(_SEM_LINE_PREFIX):
+                    sem = lines[j].strip()
+                    break
+            cards[m.group(1)] = {"doc": rel, "title": title or "", "line": i + 1,
+                                 "sig": sm.group(1), "sem": sem}
+    return cards
+
+
+def audit_sheet(inv_data, root, out, n_refs=25, n_cards=15):
+    """生成评估底稿。返回 (text, stats_dict)。确定性输出。"""
+    rep = analyze(inv_data, out)
+    all_files = {f["path"] for f in inv_data.get("files") or []}
+
+    # 1) 引用抽样：文档原句 vs 源码原文并排，行性质机器判定
+    refs = []
+    for fp in list_md(out):
+        rel = os.path.relpath(fp, out).replace("\\", "/")
+        text = read(fp)
+        for m in REF_RE.finditer(text):
+            p = m.group(1).replace("\\", "/").lstrip("./")
+            full = resolve_ref(p, all_files)
+            if full is None:
+                continue
+            ls = text.rfind("\n", 0, m.start()) + 1
+            le = text.find("\n", m.end())
+            doc_line = " ".join(text[ls:le if le != -1 else len(text)].split())
+            refs.append({"doc": rel, "ref": "%s:%s" % (m.group(1), m.group(2)),
+                         "full": full, "doc_line": doc_line[:160]})
+    total_refs = len(refs)
+    refs = _stride_sample(sorted(refs, key=lambda r: (r["doc"], r["ref"])), n_refs)
+    lines_cache = {}
+    for r in refs:
+        if r["full"] not in lines_cache:
+            lines_cache[r["full"]] = _src_lines(root, r["full"])
+        lines = lines_cache[r["full"]]
+        try:
+            lineno = int(r["ref"].rsplit(":", 1)[1])
+        except ValueError:
+            lineno = 0
+        r["kind"] = _line_kind(lines, lineno, os.path.join(root, r["full"]))
+        r["src"] = lines[lineno - 1].strip()[:160] if 1 <= lineno <= len(lines) else "（越界）"
+
+    # 2) 卡片抽样：文档签名 vs 盘点签名机器比对；语义行随底稿给出
+    cards = _doc_cards(out)
+    syms = {s["id"]: s for s in inv_data.get("symbols", [])}
+    eps = {e["id"]: e for e in inv_data.get("endpoints", [])}
+    total_cards = len(cards)
+    sig_mismatch = 0
+    card_rows = []
+    for cid in _stride_sample(sorted(cards), n_cards):
+        c = cards[cid]
+        s = syms.get(cid)
+        mark = ""
+        if s:
+            dsig = " ".join(c["sig"].split())
+            isig = " ".join((s.get("signature") or "").split())
+            if isig and dsig != isig:
+                mark = "　**[签名与盘点不一致]**"
+                sig_mismatch += 1
+        kind = s.get("kind") if s else ("端点" if cid in eps else "?")
+        card_rows.append("@%s（%s）%s%s\n    文档签名：`%s`\n    盘点签名：`%s`\n    语义行：%s"
+                         % (cid, kind, c["title"], mark, c["sig"],
+                            (s or {}).get("signature") or "（无盘点记录）",
+                            (c["sem"] or "（未填 TODO）")[:160]))
+
+    # 3) 机器自动核对汇总
+    machine = [
+        ("引用文件不存在(ref_errors)", rep["ref_errors"]),
+        ("引用行号异常(空行/注释/字符串)", [i["ref"] for i in rep.get("ref_line_issues") or []]),
+        ("零引用断言(zero_ref_asserts)", rep.get("zero_ref_asserts") or []),
+        ("地图引用失效(smap_ref_errors)", rep.get("smap_ref_errors") or []),
+        ("地图重词无痕迹(smap_suspect_terms)", rep.get("smap_suspect_terms") or []),
+        ("构建声明缺失(build_decl_missing)",
+         ["%s: %s" % (b["name"], "、".join(b["missing"][:3]))
+          for b in inv_data.get("build_issues") or []]),
+    ]
+
+    parts = ["=== 独立评估工作底稿（机器预核；语义判断仍须评估者完成）===",
+             "",
+             "## 1. 抽样引用对照（抽 %d / 共 %d）" % (len(refs), total_refs),
+             ""]
+    for r in refs:
+        parts.append("- `%s`（%s）行性质: %s" % (r["ref"], r["doc"], r["kind"]))
+        parts.append("    文档：%s" % (r["doc_line"] or "（空）"))
+        parts.append("    源码：%s" % (r["src"] or "（空）"))
+    parts += ["", "## 2. 抽样卡片核对（抽 %d / 共 %d；签名不一致 %d）"
+              % (len(card_rows), total_cards, sig_mismatch), ""]
+    parts.extend(card_rows)
+    parts += ["", "## 3. 机器自动核对汇总", ""]
+    for label, items in machine:
+        parts.append("- %s：%s" % (label, ("共 %d 项" % len(items)) if items else "0 ✓"))
+        for it in items[:5]:
+            parts.append("    - %s" % it)
+    parts += ["", "## 4. 抽样统计表（评估者填）", "",
+              "| 项 | 抽样 | 一致 | 不一致 |", "|:---|:---|:---|:---|",
+              "| 引用 | %d |  |  |" % len(refs),
+              "| 卡片 | %d |  |  |" % len(card_rows),
+              "| 叙事页 | 3 |  |  |", ""]
+    stats = {"refs_total": total_refs, "refs_sampled": len(refs),
+             "cards_total": total_cards, "cards_sampled": len(card_rows),
+             "sig_mismatch": sig_mismatch}
+    return "\n".join(parts), stats
+
+
+def cmd_audit(inv_data, root, out, n_refs=25, n_cards=15, write_out=False):
+    """生成/落盘评估工作底稿（--write 落盘 <out>/.audit-sheet.txt）。"""
+    if inv_data is None:
+        raise SystemExit("audit：缺少 inventory.json（先运行 inventory）")
+    text, stats = audit_sheet(inv_data, root, out, n_refs, n_cards)
+    if write_out:
+        path = os.path.join(out, ".audit-sheet.txt")
+        write(path, text)
+        print("底稿 -> %s（%d 引用 / %d 卡片 / 签名不一致 %d）"
+              % (os.path.relpath(path, root), stats["refs_sampled"],
+                 stats["cards_sampled"], stats["sig_mismatch"]))
+    else:
+        print(text)
+        print("统计：%s" % stats)
+    print("提醒：底稿只替代机械核对；语义正确性（叙述与源码是否一致）仍须"
+          "另一 agent/人按 references/quality-review.md 判定。")
+    return 0
+
+
 # ---------------- CLI ----------------
 
 def _force_utf8_output():
@@ -1960,10 +2235,12 @@ def main(argv=None):
     import argparse
     ap = argparse.ArgumentParser(prog="dev_docs.py", description="dev-docs 从代码库逆向生成文档")
     ap.add_argument("command", choices=["inventory", "plan", "extract", "brief", "promote",
-                                        "check", "report", "register", "fixrefs", "doctor"],
+                                        "check", "report", "register", "fixrefs", "doctor",
+                                        "audit"],
                     help="inventory 盘点 | plan 页面树 | extract 生成 draft | brief 页级填写工单 | "
                          "promote draft 转正 | check 对账/漂移 | report 索引+基线 | "
-                         "register 人工登记 | fixrefs 修正引用行号偏移 | doctor 环境与能力自检")
+                         "register 人工登记 | fixrefs 修正引用行号偏移 | doctor 环境与能力自检 | "
+                         "audit 独立评估工作底稿")
     ap.add_argument("--dir", default=".", help="目标项目目录（默认当前目录；git 仓库内自动取仓库根）")
     ap.add_argument("--out", default="dev-docs", help="输出子目录名（docs/<out>，默认 dev-docs）")
     ap.add_argument("--layer", choices=["index", "architecture", "usage", "reference", "data", "all"],
@@ -1971,7 +2248,8 @@ def main(argv=None):
     ap.add_argument("--module", help="extract 限定单个 MOD-id")
     ap.add_argument("--page", help="extract/brief 限定的页面 slug（如 reference/pico-providers）")
     ap.add_argument("--write", action="store_true",
-                    help="plan：落盘 .devdocs-plan.json | fixrefs：落盘行号修正（均默认 dry-run）")
+                    help="plan：落盘 .devdocs-plan.json | fixrefs：落盘行号修正 | "
+                         "audit：落盘 .audit-sheet.txt（均默认 dry-run/打印）")
     ap.add_argument("--force", action="store_true", help="plan：忽略已有 plan（放弃人工编辑保护）")
     ap.add_argument("--json", action="store_true", help="brief：输出 JSON（供 Agent 消费）")
     ap.add_argument("--strict", action="store_true", help="check：把 warn（AI-FILL 残留/文件未归属）升级为 ERROR")
@@ -1986,6 +2264,10 @@ def main(argv=None):
     ap.add_argument("--line", type=int, default=0, help="register 的源码行号（用于核验）")
     ap.add_argument("--signature", help="register 的签名/定义原文（可选）")
     ap.add_argument("--note", help="register 的备注（来源/抽审结论，可选）")
+    ap.add_argument("--sample-refs", type=int, default=25,
+                    help="audit 的引用抽样上限（默认 25）")
+    ap.add_argument("--sample-cards", type=int, default=15,
+                    help="audit 的卡片抽样上限（默认 15）")
     a = ap.parse_args(argv)
 
     root = resolve_root(a.dir)
@@ -2030,6 +2312,9 @@ def main(argv=None):
         return cmd_fixrefs(root, out, load_inventory(out), write=a.write)
     elif a.command == "doctor":
         return cmd_doctor(root, out)
+    elif a.command == "audit":
+        data = ensure_inventory(out, root, a.exclude, project_type=a.project_type)
+        return cmd_audit(data, root, out, a.sample_refs, a.sample_cards, write_out=a.write)
     return 0
 
 
