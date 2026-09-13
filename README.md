@@ -53,3 +53,20 @@ python3 -m unittest discover -s skills/dev-docs/tests -t skills/dev-docs
 python3 install.py            # 或 bash install.sh
 python3 uninstall.py          # 卸载
 ```
+
+## 升级 skills
+
+安装即覆盖拷贝，**更新 = 拉新版 + `--force` 重装**，目标项目里生成的文档产物（`docs/`、
+`.codebuddy` 之外的产物目录）不受影响：
+
+```bash
+git pull
+python3 install.py --check               # 看版本差（源码 vs 已安装；不安装）
+python3 install.py --global --force      # 全局安装：一次更新生效所有项目
+python3 install.py --project <path> --force   # 项目级安装：各项目需分别更新
+```
+
+`--force` 覆盖时若版本有变化会打印跃迁（如 `（版本 1.5.5 → 1.5.6）`）；运行时依赖
+（dev-docs 的 tree-sitter 系）会随安装自动 `pip install`。skill 升级后，建议在目标
+项目里重跑一次 `report` + `check`，把存量文档的机器区刷新到新版格式（新增的机器行会
+在下次生成/同步时自动补上）。

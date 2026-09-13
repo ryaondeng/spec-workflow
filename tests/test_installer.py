@@ -55,6 +55,32 @@ class InstallerCase(unittest.TestCase):
         self.assertIn("覆盖", r.stdout)
         self.assertNotEqual(dest.read_text(encoding="utf-8"), "tampered")
 
+    def test_check_reports_versions(self):
+        # 未安装：状态=未安装
+        r = run(INSTALL, "--project", str(self.tmp), "--check")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("未安装", r.stdout)
+        self.assertIn("dev-docs", r.stdout)
+        # 安装后：状态=已是最新，且不产生安装副作用
+        run(INSTALL, "--project", str(self.tmp))
+        r2 = run(INSTALL, "--project", str(self.tmp), "--check")
+        self.assertIn("已是最新", r2.stdout)
+        self.assertIn("源码", r2.stdout)
+
+    def test_force_prints_version_transition(self):
+        run(INSTALL, "--project", str(self.tmp))
+        dest = self._skills_dir() / "dev-docs" / "_meta.json"
+        # 旧版本 0.0.0（合法 JSON）→ force 重装应打印版本跃迁
+        dest.write_text('{"slug": "dev-docs", "version": "0.0.0"}', encoding="utf-8")
+        r = run(INSTALL, "--project", str(self.tmp), "--force")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("0.0.0", r.stdout)
+        self.assertIn("版本", r.stdout)
+        # 非 force 重复安装且版本不同：skip 提示里带版本差异
+        dest.write_text('{"slug": "dev-docs", "version": "0.0.0"}', encoding="utf-8")
+        r2 = run(INSTALL, "--project", str(self.tmp))
+        self.assertIn("版本不同", r2.stdout)
+
     def test_global_mode_dry(self):
         # 全局安装到真实 HOME 有副作用，这里只验证参数被接受与模式解析（不实际安装）
         r = run(INSTALL, "--help")
