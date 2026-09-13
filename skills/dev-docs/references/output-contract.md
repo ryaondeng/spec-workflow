@@ -7,7 +7,7 @@
 - 目标项目默认 `<目标项目>/docs/dev-docs/`（可用 `--out` 改子目录名）；内容随目标项目 git 入库。
 - `inventory.json` / `.baseline.json` / `.devdocs-plan.json` 为机器维护，**人工不手改**。
 - 目标项目已有同类文档/规则（docs、README、ADR）：**摘录 + 链接，不复制、不覆盖**；冲突以项目自有文档为准。
-- 文件命名用**语义 slug**（模块 path 转写：`pico.md`、`pico-evaluation.md`；根模块 `root.md`）；MOD 编号只留在 frontmatter `doc_id`。
+- 文件命名用**语义 slug**（模块 path 转写：`demo.md`、`demo-evaluation.md`；根模块 `root.md`）；MOD 编号只留在 frontmatter `doc_id`。
 
 ## 2. 稳定 ID 与锚点
 
@@ -20,12 +20,12 @@
 
 ```json
 {"version": 1,
- "modules": [{"name": "ncu", "path": "src/ncu",
+ "modules": [{"name": "ncu", "path": "src/pkg_core",
    "responsibility": "一句话职责",
-   "files": ["src/ncu/main.cpp", "src/ncu/Demo.srv"],
+   "files": ["src/pkg_core/main.cpp", "src/pkg_core/Demo.srv"],
    "ignored_files": [{"path": "third_party/x.lib", "reason": "vendored"}],
-   "key_symbols": [{"name": "NCU::spin", "kind": "method", "file": "src/ncu/main.cpp", "line": 12}],
-   "interfaces": [{"kind": "srv", "name": "ncu/Demo", "file": "src/ncu/Demo.srv"}],
+   "key_symbols": [{"name": "NCU::spin", "kind": "method", "file": "src/pkg_core/main.cpp", "line": 12}],
+   "interfaces": [{"kind": "srv", "name": "ncu/Demo", "file": "src/pkg_core/Demo.srv"}],
    "depends_on": [], "tests": []}]}
 ```
 
@@ -56,7 +56,7 @@
 doc_id: MOD-001
 type: reference
 module_id: MOD-001
-plan_slug: reference/pico
+plan_slug: reference/demo
 source_commit: a1b2c3d   # 生成时目标项目 HEAD（git）；非 git 为空
 generated_at: 2026-09-06T12:00:00+08:00
 inventory_hash: <sha256>

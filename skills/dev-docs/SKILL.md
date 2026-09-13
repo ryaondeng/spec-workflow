@@ -94,12 +94,12 @@ python3 <skill_dir>/scripts/dev_docs.py inventory --dir <目标项目> [--projec
 
 ```json
 {"version": 1,
- "modules": [{"name": "ncu", "path": "src/ncu",
+ "modules": [{"name": "ncu", "path": "src/pkg_core",
    "responsibility": "一句话职责",
-   "files": ["src/ncu/main.cpp", "src/ncu/Demo.srv"],
+   "files": ["src/pkg_core/main.cpp", "src/pkg_core/Demo.srv"],
    "ignored_files": [{"path": "third_party/x.lib", "reason": "vendored"}],
-   "key_symbols": [{"name": "NCU::spin", "kind": "method", "file": "src/ncu/main.cpp", "line": 12}],
-   "interfaces": [{"kind": "srv", "name": "ncu/Demo", "file": "src/ncu/Demo.srv"}],
+   "key_symbols": [{"name": "NCU::spin", "kind": "method", "file": "src/pkg_core/main.cpp", "line": 12}],
+   "interfaces": [{"kind": "srv", "name": "ncu/Demo", "file": "src/pkg_core/Demo.srv"}],
    "depends_on": [], "tests": []}]}
 ```
 
@@ -203,7 +203,7 @@ inventory → plan --write → extract --layer all → （逐页填叙事 + 逐�
 - 「分批」只允许两种情况：①用户显式要求先看样例；②单项目规模确实一轮装不下（须在交付时**显式列出剩余清单与原因**，不得含糊）。
 - 模块较多时"分批读码"（见 1.5）是**读取策略**，与交付轮次无关。
 
-## 规模化交付：多 agent 分工（v1.5.6，pico 243 卡实战验证）
+## 规模化交付：多 agent 分工（v1.5.6，243 卡实战验证）
 
 **触发条件**：符号卡 > 50 张或页面 > 5 页；否则单 agent 直填（小规模并行得不偿失）。
 

@@ -225,8 +225,8 @@ def _decl_file_exists(pkg_dir, rel):
 def build_decl_issues(root, pkgs):
     """构建声明一致性：CMakeLists 声明了但实际不存在的文件（构建风险）。
 
-    典型实例：`src/yolov7/CMakeLists.txt` 声明 `ncuCmd.msg` / `recTargetInfo.msg`，
-    但 `src/yolov7/msg/` 目录缺失 —— 文档若照抄声明，读者按文档 `catkin_make` 会失败。
+    典型实例：`src/pkg_vision/CMakeLists.txt` 声明 `CoreCmd.msg` / `TargetInfo.msg`，
+    但 `src/pkg_vision/msg/` 目录缺失 —— 文档若照抄声明，读者按文档 `catkin_make` 会失败。
     这是**项目自身缺陷**（文档无法修复），故只报不拦（不纳入 check 的 FAIL 组）。"""
     issues = []
     for p in pkgs:

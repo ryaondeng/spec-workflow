@@ -187,7 +187,7 @@ def line_kind_ts(abs_path, lineno, line_text=""):
 
 # ---------------- 声明行判定（v1.5.2，供填卡证据提示用）----------------
 # 区分"声明/定义行"与"调用点行"：只有前者行尾注释才是该符号的语义依据。
-# 典型陷阱：调用点 `pubRecgNodeCmd(A_MSG_CMD_RECG_STOP);//停止识别` 的行尾注释
+# 典型陷阱：调用点 `publishCoreCmd(A_MSG_CMD_RECG_STOP);//停止识别` 的行尾注释
 # 是**调用处**说明，若误配给定义处会写出错误功能描述（实测踩过）。
 _DECL_NODE_TYPES = {
     "function_declarator", "function_definition", "declaration", "field_declaration",

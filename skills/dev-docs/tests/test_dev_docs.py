@@ -255,8 +255,8 @@ class P3Case(TmpCase):
         self.assertEqual(h1, h2)
 
     def test_detect_project_type(self):
-        root = self._proj({"src/ncu/package.xml": "<package/>",
-                           "src/ncu/x.cpp": "int main(){}"})
+        root = self._proj({"src/pkg_core/package.xml": "<package/>",
+                           "src/pkg_core/x.cpp": "int main(){}"})
         self.assertEqual(inv.detect_project_type(root, []), "catkin")
         root2 = self._proj({"src/x.py": "x=1"}, name="proj2")
         self.assertEqual(inv.detect_project_type(root2, []), "generic")
@@ -605,12 +605,12 @@ class TestHumanReadability(TmpCase):
         self.assertIn("页面树未生成", dev_docs.nav_line(None, {"slug": "x"}))
 
     def test_format_source_files_grouped(self):
-        files = ["src/ncu/a.cpp", "src/ncu/b.h", "src/ncu/c.cpp", "src/ncu/d.cpp",
-                 "src/ncu/e.cpp", "src/ncu/f.cpp", "src/ncu/g.cpp",
-                 "src/yolov7/detect.py", "README.md"]
+        files = ["src/pkg_core/a.cpp", "src/pkg_core/b.h", "src/pkg_core/c.cpp", "src/pkg_core/d.cpp",
+                 "src/pkg_core/e.cpp", "src/pkg_core/f.cpp", "src/pkg_core/g.cpp",
+                 "src/pkg_vision/detect.py", "README.md"]
         s = dev_docs.format_source_files(files)
-        self.assertIn("src/ncu（7）：`a.cpp`、`b.h`、`c.cpp`、`d.cpp`、`e.cpp`、`f.cpp` 等 7 个", s)
-        self.assertIn("src/yolov7（1）：`detect.py`", s)
+        self.assertIn("src/pkg_core（7）：`a.cpp`、`b.h`、`c.cpp`、`d.cpp`、`e.cpp`、`f.cpp` 等 7 个", s)
+        self.assertIn("src/pkg_vision（1）：`detect.py`", s)
         self.assertIn("（根目录）（1）：`README.md`", s)
 
     def test_machine_lines_synced_on_merge(self):
@@ -635,7 +635,7 @@ class TestHumanReadability(TmpCase):
 
 
     def test_gh_anchor_and_index_rows(self):
-        self.assertEqual(dev_docs.gh_anchor("M300Control::FlyForward"), "m300controlflyforward")
+        self.assertEqual(dev_docs.gh_anchor("DroneController::MoveForward"), "dronecontrollermoveforward")
         self.assertEqual(dev_docs.gh_anchor("UserService.create"), "userservicecreate")
         self.assertEqual(dev_docs.gh_anchor("总览"), "总览")     # unicode 字母保留
 
@@ -780,8 +780,8 @@ class PlanAndBrief(TmpCase):
 
     def test_ref_re_ignores_version_and_ip(self):
         self.assertIsNone(dev_docs.REF_RE.search("qwen3.5:4b 与 http://127.0.0.1:11434"))
-        m = dev_docs.REF_RE.search("`pico/cli.py:12`")
-        self.assertEqual(m.group(1), "pico/cli.py")
+        m = dev_docs.REF_RE.search("`demo/cli.py:12`")
+        self.assertEqual(m.group(1), "demo/cli.py")
         self.assertEqual(m.group(2), "12")
 
     def test_ref_file_missing(self):

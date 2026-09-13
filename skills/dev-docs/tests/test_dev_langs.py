@@ -84,31 +84,31 @@ class PythonAdapter(unittest.TestCase):
 
 class CppAdapter(unittest.TestCase):
     def test_qualified_method_and_class(self):
-        src = (b"class M300Control {\n"
+        src = (b"class DroneController {\n"
                b" public:\n"
-               b"  void FlyForward(uint_32 v);\n"
+               b"  void MoveForward(uint_32 v);\n"
                b"};\n"
-               b"void M300Control::FlyForward(uint_32 v) { }\n"
+               b"void DroneController::MoveForward(uint_32 v) { }\n"
                b"int standalone() { return 0; }\n"
                b"namespace {\n"
                b"int hidden() { return 1; }\n"
                b"}\n")
         syms, _, _, _ = scan(get_adapter(".cpp"), src, "a.cpp")
         qnames = {s["qname"] for s in syms}
-        self.assertIn("M300Control", qnames)                       # class
-        self.assertIn("M300Control::FlyForward", qnames)           # .cpp 定义
+        self.assertIn("DroneController", qnames)                       # class
+        self.assertIn("DroneController::MoveForward", qnames)           # .cpp 定义
         self.assertIn("standalone", qnames)
         self.assertNotIn("hidden", qnames)                         # 匿名命名空间跳过
         kinds = {s["qname"]: s["kind"] for s in syms}
-        self.assertEqual(kinds["M300Control::FlyForward"], "method")
+        self.assertEqual(kinds["DroneController::MoveForward"], "method")
         self.assertEqual(kinds["standalone"], "function")
 
     def test_header_method_declaration(self):
-        src = (b"class Image2RTSPNodelet {\n"
+        src = (b"class VideoNodelet {\n"
                b"  virtual void onInit();\n"
                b"};\n")
         syms, _, _, _ = scan(get_adapter(".h"), src, "x.h")
-        self.assertTrue(any(s["qname"] == "Image2RTSPNodelet::onInit" and s["kind"] == "method"
+        self.assertTrue(any(s["qname"] == "VideoNodelet::onInit" and s["kind"] == "method"
                             for s in syms))
 
     def test_macro_produces_no_symbol_but_call_recorded(self):
@@ -179,11 +179,11 @@ class JavaJsBash(unittest.TestCase):
 
 class RospyShapes(unittest.TestCase):
     SRC = ("import rospy\n"
-           "from yolov7.msg import recTargetInfo, ncuCmd\n"
+           "from pkg_vision.msg import TargetInfo, CoreCmd\n"
            "rospy.init_node('yolo_node', anonymous=True)\n"
            "#rospy.init_node('commented_out')\n"
-           "rospy.Subscriber('NcuCmd', ncuCmd, cb)\n"
-           "pub = rospy.Publisher('/RecTargetInfo', recTargetInfo, queue_size=10)\n"
+           "rospy.Subscriber('CoreCmd', CoreCmd, cb)\n"
+           "pub = rospy.Publisher('/TargetInfo', TargetInfo, queue_size=10)\n"
            "srv = rospy.ServiceProxy('/set_mode', SetMode)\n")
 
     def setUp(self):
@@ -192,8 +192,8 @@ class RospyShapes(unittest.TestCase):
     def test_node_topic_service(self):
         got = {(i["kind"], i["name"], i.get("role")) for i in self.ifaces}
         self.assertIn(("node", "yolo_node", None), got)
-        self.assertIn(("topic", "NcuCmd", "sub"), got)
-        self.assertIn(("topic", "/RecTargetInfo", "pub"), got)
+        self.assertIn(("topic", "CoreCmd", "sub"), got)
+        self.assertIn(("topic", "/TargetInfo", "pub"), got)
         self.assertIn(("service", "/set_mode", "client"), got)
 
     def test_commented_code_ignored(self):
@@ -201,7 +201,7 @@ class RospyShapes(unittest.TestCase):
 
     def test_message_types_captured(self):
         pub = [i for i in self.ifaces if i.get("role") == "pub"][0]
-        self.assertEqual(pub["msg"], "recTargetInfo")
+        self.assertEqual(pub["msg"], "TargetInfo")
 
 
 class Doctor(unittest.TestCase):
@@ -222,12 +222,12 @@ class CatkinModules(unittest.TestCase):
         tmp = tempfile.mkdtemp(prefix="devlangscat_")
         try:
             files = {
-                "src/ncu/package.xml": "<package><name>ncu</name></package>",
-                "src/ncu/src/a.cpp": "int a() { return 1; }\n",
-                "src/ros_rtsp/package.xml": "<package><name>ros_rtsp</name></package>",
-                "src/ros_rtsp/src/b.cpp": "int b() { return 2; }\n",
-                "src/yolov7/package.xml": "<package><name>yolov7</name></package>",
-                "src/yolov7/detect.py": "def detect():\n    pass\n",
+                "src/pkg_core/package.xml": "<package><name>ncu</name></package>",
+                "src/pkg_core/src/a.cpp": "int a() { return 1; }\n",
+                "src/pkg_rtsp/package.xml": "<package><name>pkg_rtsp</name></package>",
+                "src/pkg_rtsp/src/b.cpp": "int b() { return 2; }\n",
+                "src/pkg_vision/package.xml": "<package><name>pkg_vision</name></package>",
+                "src/pkg_vision/detect.py": "def detect():\n    pass\n",
                 "photo/x.jpg": "bin",
             }
             for rel, content in files.items():
@@ -237,8 +237,8 @@ class CatkinModules(unittest.TestCase):
                     fh.write(content)
             data = inv.build_inventory(tmp, project_type="catkin")
             names = [(m["name"], m["kind"]) for m in data["modules"]]
-            self.assertEqual(names, [("ncu", "package"), ("ros_rtsp", "package"),
-                                     ("yolov7", "package")])
+            self.assertEqual(names, [("ncu", "package"), ("pkg_rtsp", "package"),
+                                     ("pkg_vision", "package")])
             self.assertEqual(data["project_type"], "catkin")
             # 包内符号归属正确的包
             a_sym = [s for s in data["symbols"] if s["qname"] == "a"][0]
@@ -291,9 +291,9 @@ class TestFileRule(unittest.TestCase):
 
     def test_is_test_file(self):
         from dev_langs import is_test_file
-        yes = ["test.cpp", "src/ncu/src/test.cpp", "test_foo.py", "foo_test.cpp",
+        yes = ["test.cpp", "src/pkg_core/src/test.cpp", "test_foo.py", "foo_test.cpp",
                "tests/a.py", "test/b.js", "pkg/__tests__/x.ts", "spec/y.rb", "tests.py"]
-        no = ["M300Control.cpp", "ncu_node.cpp", "detect.py", "src/tests_helper.py",
+        no = ["DroneController.cpp", "core_node.cpp", "detect.py", "src/tests_helper.py",
               "latest.cpp", "attest.py", "image2rtsp.h"]
         for p in yes:
             self.assertTrue(is_test_file(p), p)
@@ -416,11 +416,11 @@ class RefCounts(unittest.TestCase):
 
     def test_macro_defs_cpp(self):
         from dev_langs import macro_defs
-        p = self._mk("#define THREHOLD_PIX_X 25\n"
+        p = self._mk("#define LIMIT_PIX_X 25\n"
                      "#define GO(x) move(x)\n"
                      "int f() { return GO(1); }\n", "m.cpp")
         self.assertEqual(macro_defs(p),
-                         [("THREHOLD_PIX_X", 1), ("GO", 2)])
+                         [("LIMIT_PIX_X", 1), ("GO", 2)])
 
     def test_macro_defs_python_empty(self):
         from dev_langs import macro_defs

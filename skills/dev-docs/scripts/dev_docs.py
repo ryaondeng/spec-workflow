@@ -788,7 +788,7 @@ def format_source_files(files, limit=12):
 
 
 def resolve_ref(p, all_files):
-    """引用路径解析：精确命中 / 唯一后缀命中（如 `M300Control.h:99` 短写）→ 全路径；
+    """引用路径解析：精确命中 / 唯一后缀命中（如 `DroneController.h:99` 短写）→ 全路径；
     多义或不存在 → None（调用方按缺/歧义分别处置）。"""
     p = p.replace("\\", "/").lstrip("./")
     if p in all_files:
@@ -1074,7 +1074,7 @@ def cmd_promote(out, draft_path, inv_data=None):
             draft_path = cand
     draft_path = os.path.abspath(draft_path)
     if not draft_path.endswith(".draft"):
-        raise SystemExit("promote 目标需为 *.draft（如 reference/pico.md.draft）")
+        raise SystemExit("promote 目标需为 *.draft（如 reference/demo.md.draft）")
     if not os.path.exists(draft_path):
         raise SystemExit("draft 不存在: %s" % draft_path)
     final = draft_path[:-len(".draft")]
@@ -1936,7 +1936,7 @@ def _field_comments(lines, lineno, limit=3):
     """结构体/类字段的行尾注释（最多 3 条）。
 
     必须在本结构体的**闭合 `}`** 处停止——否则会越界采到后面结构体的字段注释
-    （实测：`ServiceAck` 拿到了 `JoystickCommand` 的字段说明）。"""
+    （实测：`AckMsg` 拿到了 `CommandMsg` 的字段说明）。"""
     out, started = [], False
     for i in range(lineno - 1, min(lineno + 30, len(lines))):
         s = lines[i].strip()
@@ -2354,7 +2354,7 @@ def main(argv=None):
     ap.add_argument("--layer", choices=["index", "architecture", "usage", "reference", "data", "all"],
                     help="extract 的层（all=除 data 外全部页；无页面树时兼容 architecture|reference|data）")
     ap.add_argument("--module", help="extract 限定单个 MOD-id")
-    ap.add_argument("--page", help="extract/brief 限定的页面 slug（如 reference/pico-providers）")
+    ap.add_argument("--page", help="extract/brief 限定的页面 slug（如 reference/demo-providers）")
     ap.add_argument("--write", action="store_true",
                     help="plan：落盘 .devdocs-plan.json | fixrefs：落盘行号修正 | "
                          "audit：落盘 .audit-sheet.txt（均默认 dry-run/打印）")

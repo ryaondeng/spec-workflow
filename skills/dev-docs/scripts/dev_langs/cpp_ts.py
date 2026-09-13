@@ -2,7 +2,7 @@
 """dev_langs.cpp_ts — C/C++ 适配器（tree-sitter 实现）。
 
 收集范围：
-- function_definition：.cpp/.cc/.cxx 定义 + 纯头文件内联定义；qualified 名（M300Control::foo）
+- function_definition：.cpp/.cc/.cxx 定义 + 纯头文件内联定义；qualified 名（DroneController::foo）
   拆出 cls，kind=method
 - class_specifier / struct_specifier（带名）：kind=class
 - field_declaration：仅头文件（.h/.hpp/.hh）中的方法声明 → kind=method（类接口面）
