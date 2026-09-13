@@ -213,8 +213,8 @@ class TestDocsFilesPresence(unittest.TestCase):
         skill = os.path.dirname(HERE)
         for name in ("SKILL.md", "_meta.json"):
             self.assertTrue(os.path.exists(os.path.join(skill, name)))
-        for ref in ("output-contract", "evidence-protocol", "api-doc-style",
-                    "lang-mapping", "anti-patterns"):
+        for ref in ("output-contract", "card-filling", "lang-mapping",
+                    "anti-patterns", "quality-review"):
             self.assertTrue(os.path.exists(
                 os.path.join(skill, "references", ref + ".md")))
         for t in ("index", "architecture", "reference", "data"):

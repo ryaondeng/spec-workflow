@@ -21,7 +21,7 @@ description: >
 
 1. **双轨提取** — 规则轨：`inventory` 产出**文件全集**（含未登记语言）+ 符号/端点机器盘点 + 哈希漂移基线；LLM 轨：AI 通读代码建**语义地图**（`.semantic-map.json`，每条带来源文件），两轨汇入同一套 `check` 对账
 2. **AI 只写语义层** — 在文件全集/语义地图之上写职责/参数/返回/错误/示例；示例取自测试，禁止编造调用方式；盘点/地图不可靠处显式 `unknown`
-3. **证据协议** — 每条结论标注 事实/推断/假设/缺失；拿不准写 `unknown`，禁止伪造（详见 `references/evidence-protocol.md`）
+3. **证据协议** — 每条结论标注 事实/推断/假设/缺失；拿不准写 `unknown`，禁止伪造（详见 `references/card-filling.md`）
 4. **草稿合入** — AI 产出先落 `*.draft.md`，经人工 diff 确认后 `promote` 转正（只更新 AI-GEN 区）；未抽审 draft 不得进正式文档
 5. **对账门禁** — 覆盖对账 `check` ERROR=0（无 orphan/phantom/stale/登记腐化）才可宣告完成；语言指纹未覆盖的符号走 `register` 显式登记（必须 file:line 真实）即不算 phantom
 6. **权威来源去重** — 目标项目已有的 docs/rules/README 等同类内容：摘录 + 链接，不复制、不覆盖、不双轨
@@ -165,12 +165,14 @@ dev_docs.py audit    --dir <目标项目> [--write] [--sample-refs 25] [--sample
 ## 生成规范
 
 按需加载（阶段匹配，不整读）：
-- `references/output-contract.md` — 产物契约/ID 规则/frontmatter/AI-GEN marker
-- `references/evidence-protocol.md` — 证据标注 + unknown 规则
-- `references/api-doc-style.md` — 函数级/端点级条目模板、示例质量要求
-- `references/lang-mapping.md` — Java/Python/TS 指纹与发现约定
+- `references/output-contract.md` — 产物契约：目录/锚点/frontmatter/AI-GEN 区/语义地图 schema/引用与行号规则
+- `references/card-filling.md` — 卡片填写与证据标注：四级证据标签、unknown 规则、示例质量要求、风格红线
+- `references/lang-mapping.md` — 语言支持矩阵、入口/契约发现约定、跨语言执行要点
 - `references/anti-patterns.md` — 红线 + 分层抽审 checklist
-- `references/known-limits.md` — 当前机制、已知限制与应答口径（遇到“编号难读/结构重复/分层/对外接口文档/语言不支持”等反馈时先读，不现场重构；开发规划在 spec-workflow docs/pool，不在本 skill）
+- `references/quality-review.md` — 独立评估清单（交付前语义复核）
+
+对用户反馈"编号难读 / 结构重复 / 分层 / 对外接口文档 / 语言不支持"等问题：按当前版本能力应答
+（是已登记的方向/限制），**不现场重构**；开发规划在 spec-workflow `docs/`，不在本 skill 内。
 
 ## 红线（违反不得宣告完成，详见 anti-patterns.md）
 
