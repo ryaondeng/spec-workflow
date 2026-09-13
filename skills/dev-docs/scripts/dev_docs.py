@@ -25,6 +25,9 @@ ANCHOR = re.compile(r"<!--\s*@([A-Z]+-\d+)\s*-->")   # v1.3：kind 前缀放开�
 MARK = "<!-- TODO AI 依源码填写"   # 语义未填占位（填充度报告用）
 # v1.4.1：「相关源文件」行虽位于 AI-GEN 区外，但由机器维护（随扫描/语义地图刷新）
 _SRC_LINE_RE = re.compile(r"^\*\*相关源文件\*\*：.*$", re.M)
+# v1.5.5：「页面导航」行同为机器维护（随页面树刷新：父链/兄弟页/标题变化）
+_NAV_LINE_RE = re.compile(r"^\*\*页面导航\*\*：.*$", re.M)
+_MACHINE_LINE_RES = (_SRC_LINE_RE, _NAV_LINE_RE)
 SYM_TODO = "<!-- TODO AI 依源码填写（evidence: 推断/假设需注明） -->"
 EP_TODO = "<!-- TODO AI 依源码填写；示例取 tested_by 对应测试 -->"
 
@@ -201,23 +204,68 @@ def _ep_title(e):
     return ("%s %s" % (methods, e.get("path") or "")).strip()
 
 
+def gh_anchor(title):
+    """GitHub 标题锚 slug：小写；字母数字（含 unicode）与 - _ 保留；空格转 -；其余标点丢弃。
+    与 `### <标题>` 渲染后的页内锚一致，供索引表跳转到卡片（不同查看器略有差异，失效无害）。"""
+    out = []
+    for ch in (title or "").strip().lower():
+        if ch.isalnum() or ch in "_-":
+            out.append(ch)
+        elif ch == " ":
+            out.append("-")
+    return "".join(out)
+
+
 def ref_index_rows(inv_data, module_id):
-    """符号索引表行：机器全量生成（ID + 人读名 + 类型）。"""
+    """符号索引表行：机器全量生成（ID + 可跳转符号名 + 类型 + 位置文件 + 说明）。
+    v1.5.5：符号名带页内锚链接（浏览器一键跳卡片）；新增「位置」列（basename，
+    刻意不含 `:行号` 以避开 REF_RE 的引用校验——行号引用只属于卡片签名行）。"""
     rows = []
     for s in inv_data["symbols"]:
         if s["module"] != module_id:
             continue
         note = "refs:0（源码零引用）" if s.get("refs") == 0 else "—"
-        rows.append("| @%s | %s | %s | %s |" % (s["id"], s["qname"], s.get("kind") or "函数", note))
+        loc = os.path.basename(s.get("file") or "—") or "—"
+        name = "[%s](#%s)" % (s["qname"], gh_anchor(s.get("qname") or ""))
+        rows.append("| @%s | %s | %s | %s | %s |"
+                    % (s["id"], name, s.get("kind") or "函数", loc, note))
     for e in inv_data["endpoints"]:
         if e["module"] != module_id:
             continue
-        rows.append("| @%s | %s | 端点 | — |" % (e["id"], _ep_title(e)))
+        loc = os.path.basename(e.get("file") or "—") or "—"
+        rows.append("| @%s | %s | 端点 | %s | — |" % (e["id"], _ep_title(e), loc))
     for i in inv_data.get("interfaces", []) or []:
         if i["module"] != module_id:
             continue
-        rows.append("| @%s | %s | %s | — |" % (i["id"], i["name"], i.get("kind") or "接口"))
+        loc = os.path.basename(i.get("file") or "—") or "—"
+        rows.append("| @%s | %s | %s | %s | — |" % (i["id"], i["name"], i.get("kind") or "接口", loc))
     return rows
+
+
+_KIND_CN = {"class": "类", "method": "方法", "function": "函数"}
+
+
+def ref_summary(inv_data, module_id):
+    """本页速览（v1.5.5，机器渲染）：符号构成 + 零引用数——读者 10 秒建立模块全局感。
+    空模块返回空串（模板行塌缩为空行，无碍）。"""
+    syms = [s for s in inv_data.get("symbols", []) if s.get("module") == module_id]
+    eps = [e for e in inv_data.get("endpoints", []) if e.get("module") == module_id]
+    ifaces = [i for i in inv_data.get("interfaces", []) or [] if i.get("module") == module_id]
+    if not (syms or eps or ifaces):
+        return ""
+    kinds = {}
+    for s in syms:
+        k = _KIND_CN.get(s.get("kind"), s.get("kind") or "其他")
+        kinds[k] = kinds.get(k, 0) + 1
+    parts = ["%s" % "、".join("%s %d" % (k, n) for k, n in kinds.items()) or "符号 0"]
+    if eps:
+        parts.append("端点 %d" % len(eps))
+    if ifaces:
+        parts.append("接口/绑定 %d" % len(ifaces))
+    zero = len([s for s in syms if s.get("refs") == 0])
+    if zero:
+        parts.append("**零引用 %d**（见索引表 refs:0 标注）" % zero)
+    return "符号面：%s" % "；".join(parts)
 
 
 def ref_detail_sections(inv_data, module_id):
@@ -323,26 +371,34 @@ def reference_tpl_values(inv_data, m):
         "inventory_hash": inv_data.get("_inventory_hash") or "",
         "status": "draft",
         "deps": _deps_display(m),
-        "index_rows": "\n".join(ref_index_rows(inv_data, m["id"])) or "| — | （本模块无公开符号） | — | — |",
+        "index_rows": "\n".join(ref_index_rows(inv_data, m["id"])) or "| — | （本模块无公开符号） | — | — | — |",
+        "ref_summary": ref_summary(inv_data, m["id"]),
         "detail_rows": ref_detail_sections(inv_data, m["id"]),
     }
 
 
 def arch_module_rows(inv_data, out=None):
-    """架构页模块清单表（机器行：编号/名称/路径/职责(语义地图优先)/依赖）。
-    v1.5.4：职责来自语义地图（LLM 自由文本）时标注「AI 断言·待核」——
-    防止 AI 臆测被读者当成机器实测（P0-1：曾把"本地 SQLite 数据库"渲染成事实）。"""
+    """架构页模块清单表（机器渲染**整表**：表头 + 行）。
+    v1.5.5：职责列来源标注收敛到表头一次（此前每行都拖「AI 断言·待核」，重复噪音）；
+    表内无语义地图数据时表头退回「职责」。行：编号/名称/路径/职责(语义地图优先)/依赖。"""
+    used_smap = False
     rows = []
     for m in inv_data.get("modules", []):
         resp = "（待补：职责）"
         if out:
             sm = smap_for_module(out, m)
             if sm and sm.get("responsibility"):
-                resp = "%s%s" % (sm["responsibility"], AI_ASSERT_MARK)
+                resp = sm["responsibility"]
+                used_smap = True
         rows.append("| %s | %s | %s | %s | %s |"
                     % (m["id"], m["name"], m["path"], resp,
                        _deps_display(m)))
-    return "\n".join(rows) if rows else "| — | — | — | — | — |"
+    if not rows:
+        rows = ["| — | — | — | — | — |"]
+    header = "职责（语义地图·AI 断言·待核）" if used_smap else "职责"
+    table = ["| MOD-id | 模块 | 路径 | %s | 主要依赖 |" % header,
+             "|:---|:---|:---|:---|:---|"] + rows
+    return "\n".join(table)
 
 
 def arch_values(inv_data):
@@ -640,6 +696,37 @@ def validate_plan(plan):
     return errs
 
 
+def nav_line(plan, page):
+    """页面导航行（v1.5.5）：父链 › 当前页，附同级页链接——
+    大文档集里人类跳转全靠 URL 手改，plan 的 parent 链数据齐全，纯渲染零成本。"""
+    if not plan:
+        return "（页面树未生成）"
+    pages = (plan.get("pages") or [])
+    by_slug = {p.get("slug"): p for p in pages if p.get("slug")}
+    chain, cur = [], page
+    while cur and cur.get("parent"):
+        par = by_slug.get(cur["parent"])
+        if not par:
+            break
+        chain.append(par)
+        cur = par
+    parts = ["[%s](%s.md)" % (p.get("title") or p["slug"], p["slug"])
+             for p in reversed(chain)]
+    parts.append("**%s**" % (page.get("title") or page.get("slug") or ""))
+    line = " › ".join(parts)
+    sibs = [p for p in pages
+            if p.get("parent") == page.get("parent") and p.get("slug") != page.get("slug")]
+    if sibs:
+        sib = " ｜ ".join("[%s](%s.md)" % (p.get("title") or p["slug"], p["slug"])
+                          for p in sibs[:8])
+        if len(sibs) > 8:
+            sib += " 等 %d 页" % len(sibs)
+        line += "　·　同级：" + sib
+    if not (page.get("parent") or sibs):
+        line = "文档首页（共 %d 页）" % len(pages)
+    return line
+
+
 def plan_tree_md(plan, with_status=True):
     """页面树 → markdown 嵌套列表（index 文档树 / plan dry-run 共用）。"""
     if not plan:
@@ -684,13 +771,20 @@ def set_page_status(out, slug, status):
 
 
 def format_source_files(files, limit=12):
-    files = list(files or [])
+    """相关源文件渲染：按目录分组（目录前缀只出现一次，组内列文件名），
+    每组最多展示 6 个文件名，超出以「等 n 个」收尾——一长串全路径人类扫读困难。"""
+    files = [str(f).replace("\\", "/") for f in (files or [])]
     if not files:
         return "（待补：本页相关源文件）"
-    s = "、".join("`%s`" % f for f in files[:limit])
-    if len(files) > limit:
-        s += " …（共 %d 个）" % len(files)
-    return s
+    groups = {}   # py3.7+ dict 保序：目录按首次出现顺序
+    for f in files:
+        groups.setdefault(os.path.dirname(f) or "（根目录）", []).append(f)
+    parts = []
+    for d, fs in groups.items():
+        shown = "、".join("`%s`" % os.path.basename(x) for x in fs[:6])
+        more = " 等 %d 个" % len(fs) if len(fs) > 6 else ""
+        parts.append("%s（%d）：%s%s" % (d, len(fs), shown, more))
+    return "；".join(parts)
 
 
 def resolve_ref(p, all_files):
@@ -748,6 +842,7 @@ def page_values(inv_data, out, page):
         "langs": ",".join(langs) or "?",
         "sections_list": " / ".join(page.get("sections") or []),
         "doc_tree": plan_tree_md(load_plan(out)),
+        "nav": nav_line(load_plan(out), page),
         "n_modules": len(inv_data.get("modules") or []),
         "n_symbols": len(inv_data.get("symbols") or []),
         "n_endpoints": len(inv_data.get("endpoints") or []),
@@ -785,6 +880,7 @@ def coverage_values(inv_data, out, rep=None):
         "page_generated": ps.get("generated", 0), "page_planned": ps.get("planned", 0),
         "check_status": "PASS（ERROR=0）" if ok else "有未处理项",
         "ai_fill": len(rep.get("ai_fill") or []),
+        "semantic_todo": rep.get("semantic_todo", 0),
     }
 
 
@@ -827,11 +923,20 @@ def _merge_doc(old_text, new_text, keep_status=False):
 
 
 def _sync_source_line(old, new):
-    """把旧文本的「**相关源文件**：…」行替换为新渲染值（无则原样返回）。"""
-    m = _SRC_LINE_RE.search(new or "")
-    if not m or not _SRC_LINE_RE.search(old or ""):
-        return old
-    return _SRC_LINE_RE.sub(lambda _m: m.group(0), old, count=1)
+    """机器维护行（相关源文件 / 页面导航）同步：已有则替换为新渲染值；
+    旧文档缺失（如 v1.5.5 新增的导航行）则**注入**到「相关源文件」行之前——
+    否则存量文档永远拿不到新增的机器行（pre 区整体保留原则会挡住它）。"""
+    for rx in _MACHINE_LINE_RES:
+        m = rx.search(new or "")
+        if not m:
+            continue
+        if rx.search(old or ""):
+            old = rx.sub(lambda _m: m.group(0), old, count=1)
+        elif rx is _NAV_LINE_RE:
+            anchor = _SRC_LINE_RE.search(old or "")
+            if anchor:
+                old = old[:anchor.start()] + m.group(0) + "\n\n" + old[anchor.start():]
+    return old
 
 
 # 卡片语义行前缀：符号卡（用途/参数/返回/错误）与接口卡（用途/语义）两类
@@ -1536,6 +1641,7 @@ def analyze(inv_data, out, drift=False):
     ref_errors = page_ref_errors(inv_data, out)
     ref_lines = ref_line_issues(inv_data, out)      # v1.4.1：引用行号合理性（空行/注释行=疑似偏移）
     fill_hits = ai_fill_hits(out)
+    semantic_todo = unfilled_todo_count(out)[0]   # v1.5.5：index 覆盖率人话口径（未填卡片语义处数）
     page_stat = {"total": 0, "filled": 0, "generated": 0, "planned": 0}
     for p in (plan or {}).get("pages") or []:
         page_stat["total"] += 1
@@ -1556,6 +1662,7 @@ def analyze(inv_data, out, drift=False):
         "has_plan": plan is not None, "page_stat": page_stat,
         "plan_missing_pages": missing_pages, "section_missing": section_missing,
         "ref_errors": ref_errors, "ai_fill": fill_hits,
+        "semantic_todo": semantic_todo,
         "ref_line_issues": ref_lines,
         "zero_ref_asserts": zero_ref_asserts(inv_data, out),
         "smap_ref_errors": smap_ref_errors(inv_data, out),
@@ -2051,7 +2158,8 @@ def cmd_brief(inv_data, root, out, page_slug, as_json=False):
     print("撰写要求：")
     for i, h in enumerate(d["requirements"], 1):
         print("  %d. %s" % (i, h))
-    print("  · 每条结论标 evidence：事实（file:line）/ 推断 / 假设 / 缺失（写 unknown）")
+    print("  · 每条结论标 evidence：事实（file:line）/ 推断 / 假设 / 缺失（写 unknown）；"
+          "行内证据用短式「（据 file:line）」，不比正文长")
     print("  · 签名、字段、路径必须引用源码原文；看不见的写 not visible in sources")
     print("")
     print("完成后自检（check 会查）：")

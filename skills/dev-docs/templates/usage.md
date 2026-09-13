@@ -12,6 +12,8 @@ status: {status}
 
 > {purpose}
 
+**页面导航**：{nav}
+
 **相关源文件**：{source_files}
 
 <!-- AI-FILL:USAGE-INSTALL 安装与启动 —— 前置条件、安装命令、启动命令（README 已有则摘录关键命令 + 链接，不复制大段原文）。填完删除本注释 -->

@@ -13,6 +13,8 @@ status: {status}
 
 > {purpose}
 
+**页面导航**：{nav}
+
 **相关源文件**：{source_files}
 
 <!-- AI-FILL:DATA-ENTITY 实体与字段 —— 逐个实体列字段：名｜类型｜约束｜来源（file:line）。源码里读不到的字段写 unknown，不省略不伪造。填完删除本注释 -->

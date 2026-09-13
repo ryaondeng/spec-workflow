@@ -499,11 +499,15 @@ class TestSmapGate(TmpCase):
     def test_arch_rows_label_ai_assert(self):
         root, out, data = self._init({
             "modules": [{"path": "src", "responsibility": "管全部事情"}]})
-        rows = dev_docs.arch_module_rows(data, out)
-        self.assertIn("管全部事情（语义地图·AI 断言·待核）", rows)
-        # 无语义地图 → 无标注
+        table = dev_docs.arch_module_rows(data, out)
+        self.assertIn("职责（语义地图·AI 断言·待核）", table)   # v1.5.5：表头一次标注
+        self.assertIn("管全部事情 |", table)
+        self.assertNotIn("管全部事情（语义地图", table)          # 行内不再重复
+        # 无语义地图 → 表头退回「职责」
         os.remove(os.path.join(out, dev_docs.SEMANTIC_MAP_FILE))
-        self.assertIn("（待补：职责）", dev_docs.arch_module_rows(data, out))
+        table2 = dev_docs.arch_module_rows(data, out)
+        self.assertIn("（待补：职责）", table2)
+        self.assertNotIn("AI 断言", table2)
 
     def test_smap_ref_errors(self):
         root, out, data = self._init({
@@ -578,6 +582,96 @@ class TestAudit(TmpCase):
         rc = dev_docs.cmd_audit(data, root, out, write_out=True)
         self.assertEqual(rc, 0)
         self.assertTrue(os.path.exists(os.path.join(out, ".audit-sheet.txt")))
+
+
+class TestHumanReadability(TmpCase):
+    """v1.5.5：人类阅读端优化——页面导航 / 源文件分组 / 机器行同步。"""
+
+    def test_nav_line_chain_and_siblings(self):
+        plan = {"pages": [
+            {"slug": "index", "title": "总览", "parent": None},
+            {"slug": "architecture", "title": "架构", "parent": "index"},
+            {"slug": "reference/a", "title": "模块A", "parent": "index"},
+            {"slug": "reference/b", "title": "模块B", "parent": "index"},
+        ]}
+        nav = dev_docs.nav_line(plan, {"slug": "reference/a", "title": "模块A", "parent": "index"})
+        self.assertIn("[总览](index.md)", nav)
+        self.assertIn("**模块A**", nav)
+        self.assertIn("同级：", nav)
+        self.assertIn("[模块B](reference/b.md)", nav)
+        # 首页：无父链无兄弟
+        self.assertIn("文档首页", dev_docs.nav_line(plan, {"slug": "index", "title": "总览"}))
+        # 无页面树
+        self.assertIn("页面树未生成", dev_docs.nav_line(None, {"slug": "x"}))
+
+    def test_format_source_files_grouped(self):
+        files = ["src/ncu/a.cpp", "src/ncu/b.h", "src/ncu/c.cpp", "src/ncu/d.cpp",
+                 "src/ncu/e.cpp", "src/ncu/f.cpp", "src/ncu/g.cpp",
+                 "src/yolov7/detect.py", "README.md"]
+        s = dev_docs.format_source_files(files)
+        self.assertIn("src/ncu（7）：`a.cpp`、`b.h`、`c.cpp`、`d.cpp`、`e.cpp`、`f.cpp` 等 7 个", s)
+        self.assertIn("src/yolov7（1）：`detect.py`", s)
+        self.assertIn("（根目录）（1）：`README.md`", s)
+
+    def test_machine_lines_synced_on_merge(self):
+        old = ("---\ndoc_id: X\n---\n# T\n\n**页面导航**：[旧](old.md)\n\n"
+               "**相关源文件**：`old.py`\n\n<!-- AI-GEN:BEGIN -->\nbody\n<!-- AI-GEN:END -->\n")
+        new = ("---\ndoc_id: X\n---\n# T\n\n**页面导航**：[新](new.md)\n\n"
+               "**相关源文件**：`new.py`\n\n<!-- AI-GEN:BEGIN -->\nnew-body\n<!-- AI-GEN:END -->\n")
+        merged = dev_docs._merge_doc(old, new)
+        self.assertIn("**页面导航**：[新](new.md)", merged)      # 导航行随机器刷新
+        self.assertIn("**相关源文件**：`new.py`", merged)
+        self.assertIn("new-body", merged)
+
+    def test_nav_line_injected_into_legacy_doc(self):
+        # 存量文档（v1.5.5 前生成，无导航行）：重生成时导航行必须被注入
+        old = ("---\ndoc_id: X\n---\n# T\n\n> 用途\n\n"
+               "**相关源文件**：`old.py`\n\n<!-- AI-GEN:BEGIN -->\nbody\n<!-- AI-GEN:END -->\n")
+        new = ("---\ndoc_id: X\n---\n# T\n\n> 用途\n\n**页面导航**：[总览](index.md) › **T**\n\n"
+               "**相关源文件**：`new.py`\n\n<!-- AI-GEN:BEGIN -->\nnew-body\n<!-- AI-GEN:END -->\n")
+        merged = dev_docs._merge_doc(old, new)
+        self.assertIn("**页面导航**：[总览](index.md) › **T**", merged)
+        self.assertLess(merged.find("页面导航"), merged.find("相关源文件"))
+
+
+    def test_gh_anchor_and_index_rows(self):
+        self.assertEqual(dev_docs.gh_anchor("M300Control::FlyForward"), "m300controlflyforward")
+        self.assertEqual(dev_docs.gh_anchor("UserService.create"), "userservicecreate")
+        self.assertEqual(dev_docs.gh_anchor("总览"), "总览")     # unicode 字母保留
+
+    def test_index_rows_with_location_column(self):
+        write_tree(self.tmp, {
+            "src/app.py": ("class UserService:\n"
+                           "    def create(self, name):\n"
+                           "        return name\n"),
+        })
+        data = inv.build_inventory(self.tmp)
+        mid = data["symbols"][0]["module"]
+        rows = dev_docs.ref_index_rows(data, mid)
+        self.assertEqual(len(rows), 1)                       # python 适配器：类不产符号，只有方法
+        r = rows[0]
+        self.assertEqual(r.count("|"), 6)                    # 5 列（含首尾分隔）
+        self.assertIn("[UserService.create](#userservicecreate)", r)   # 锚链接
+        self.assertIn("| app.py |", r)                       # 位置列只放 basename
+        self.assertNotIn(".py:", r)                          # 刻意不带 :行号（避开 REF_RE）
+
+    def test_ref_summary_counts_and_zero_ref(self):
+        write_tree(self.tmp, {
+            "src/app.py": ("class UserService:\n"
+                           "    def create(self, name):\n"
+                           "        return name\n"
+                           "\n"
+                           "def dead_fn():\n"
+                           "    pass\n"),
+        })
+        data = inv.build_inventory(self.tmp)
+        mid = data["symbols"][0]["module"]
+        s = dev_docs.ref_summary(data, mid)
+        self.assertIn("方法 1", s)
+        self.assertIn("函数 1", s)
+        self.assertIn("零引用 2", s)                          # create 与 dead_fn 均无调用
+        # 空模块 → 空串
+        self.assertEqual(dev_docs.ref_summary(data, "MOD-999"), "")
 
 
 class PlanAndBrief(TmpCase):
@@ -719,8 +813,9 @@ class PlanAndBrief(TmpCase):
             dev_docs.cmd_promote(out, os.path.join(out, p["slug"] + ".md.draft"), data)
         self.assertEqual(dev_docs.cmd_check(data, out, False, root, strict=True), 1)
         # 仅清 AI-FILL（语义仍空）——语义门禁须独立生效，不被 AI-FILL 掩盖
+        # （re.S：AI-FILL 工单注释可为多行，如 v1.5.5 的白盒卡骨架）
         for fp in dev_docs.list_md(out):
-            text = re.sub(r"<!-- AI-FILL:[^\n]*-->\n", "", open(fp, encoding="utf-8").read())
+            text = re.sub(r"<!-- AI-FILL:.*?-->\n", "", open(fp, encoding="utf-8").read(), flags=re.S)
             with open(fp, "w", encoding="utf-8", newline="\n") as fh:
                 fh.write(text)
         self.assertEqual(dev_docs.cmd_check(data, out, False, root, strict=True), 1)

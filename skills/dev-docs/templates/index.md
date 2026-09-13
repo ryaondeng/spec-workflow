@@ -12,6 +12,8 @@ status: {status}
 
 > {purpose}
 
+**页面导航**：{nav}
+
 **相关源文件**：{source_files}
 
 <!-- AI-FILL:INDEX-POSITION 项目定位 —— 一句话说清：项目是什么、解决什么问题、给谁用。evidence 标注。填完删除本注释 -->
@@ -26,9 +28,9 @@ status: {status}
 |:---|:---|
 <!-- TODO AI 依源码填写（每行给来源） -->
 
+<!-- AI-GEN:BEGIN -->
 ## 文档树
 
-<!-- AI-GEN:BEGIN -->
 {doc_tree}
 
 ## 覆盖率摘要
@@ -36,9 +38,9 @@ status: {status}
 | 指标 | 值 |
 |:---|:---|
 | 文件归属 | {file_covered} / {file_total}（未覆盖 {file_uncovered_n}，ignored {file_ignored}） |
-| 符号登记 | {registered} / {want_count}（orphan {orphan}、phantom {phantom}、stale {stale}） |
+| 符号登记 | {registered} / {want_count}（有码无文 {orphan} · 有文无码 {phantom} · 文档过期 {stale}） |
 | 页面进度 | 共 {page_total} 页（✅ 已完成 {page_filled} / 🟡 已生成 {page_generated} / ⬜ 待生成 {page_planned}） |
-| 语义填充 | 未填 AI-FILL 文件 {ai_fill} 个 |
+| 语义填充 | 未填卡片语义 {semantic_todo} 处；未清 AI-FILL 工单文件 {ai_fill} 个 |
 | 对账 | {check_status} |
 <!-- AI-GEN:END -->
 
