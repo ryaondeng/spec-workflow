@@ -291,9 +291,13 @@ class TestFileRule(unittest.TestCase):
 
     def test_is_test_file(self):
         from dev_langs import is_test_file
-        yes = ["test.cpp", "src/pkg_core/src/test.cpp", "test_foo.py", "foo_test.cpp",
-               "tests/a.py", "test/b.js", "pkg/__tests__/x.ts", "spec/y.rb", "tests.py"]
-        no = ["DroneController.cpp", "core_node.cpp", "detect.py", "src/tests_helper.py",
+        # v1.5.7（外评 P1-3）：C/C++ 裸 `test.cpp` **不**判测试（实测误伤真实 ROS 节点），
+        # 只认 test_*/…_test 与测试目录；脚本类维持裸 test.py 判测试
+        yes = ["test_foo.py", "foo_test.cpp", "test_bar.cpp", "tests/a.py", "test/b.js",
+               "pkg/__tests__/x.ts", "spec/y.rb", "tests.py",
+               "tests/test.cpp", "src/test/main.cpp"]
+        no = ["test.cpp", "src/pkg_core/src/test.cpp", "DroneController.cpp",
+              "core_node.cpp", "detect.py", "src/tests_helper.py",
               "latest.cpp", "attest.py", "image2rtsp.h"]
         for p in yes:
             self.assertTrue(is_test_file(p), p)
@@ -308,7 +312,9 @@ class TestFileRule(unittest.TestCase):
             files = {
                 "src/p/package.xml": "<package><name>p</name></package>",
                 "src/p/src/main.cpp": "int app() { return 1; }\n",
+                # v1.5.7：裸 test.cpp 按非测试处理（产符号 + ambiguous note）；test_bar.cpp 判测试
                 "src/p/src/test.cpp": "int main() { return 0; }\n",
+                "src/p/src/test_bar.cpp": "int tst() { return 0; }\n",
             }
             for rel, content in files.items():
                 fp = os.path.join(tmp, rel)
@@ -318,10 +324,111 @@ class TestFileRule(unittest.TestCase):
             data = inv.build_inventory(tmp, project_type="catkin")
             names = {s["qname"] for s in data["symbols"]}
             self.assertIn("app", names)
-            self.assertNotIn("main", names)                      # test.cpp 不产符号
-            self.assertEqual([t["file"] for t in data["tests"]], ["src/p/src/test.cpp"])
+            self.assertIn("main", names)                         # 裸 test.cpp 产符号（P1-3）
+            self.assertNotIn("tst", names)                       # test_bar.cpp 仍判测试
+            self.assertEqual([t["file"] for t in data["tests"]],
+                             ["src/p/src/test_bar.cpp"])
+            notes = " ".join(n.get("note", "") for n in data["confidence"]["notes"])
+            self.assertIn("ambiguous_test_stem", notes)          # 歧义提示可见
+            # 锚点稳定不变式：main（裸 test.cpp，延后追加）的 ID 在所有既有符号之后
+            def num(s):
+                return int(s["id"].split("-")[1])
+            self.assertGreater(num(next(s for s in data["symbols"] if s["qname"] == "main")),
+                               max(num(s) for s in data["symbols"] if s["qname"] != "main"))
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+class ExternalReviewB1(unittest.TestCase):
+    """v1.5.7：外评修复清单 B1 批验收（P0-1/2/3/4/5 + P1-2/5）。"""
+
+    def _tmp(self):
+        import shutil
+        import tempfile
+        tmp = tempfile.mkdtemp(prefix="devlangs_b1_")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        return tmp
+
+    def _write(self, tmp, files):
+        import os
+        for rel, content in files.items():
+            fp = os.path.join(tmp, rel)
+            os.makedirs(os.path.dirname(fp), exist_ok=True)
+            with open(fp, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(content)
+
+    def test_p0_1_cpp_qualified_name_normalized(self):
+        tmp = self._tmp()
+        self._write(tmp, {
+            "src/p/package.xml": "<package><name>p</name></package>",
+            # 换行混入 qualified 名：`Cls::\n    fn(` 曾裂成 `Cls:: gpsToXy`
+            "src/p/src/m.cpp": "void M300Control::\n    gpsToXy() {}\n",
+        })
+        data = inv.build_inventory(tmp, project_type="catkin")
+        qnames = {s["qname"] for s in data["symbols"]}
+        self.assertIn("M300Control::gpsToXy", qnames)
+        self.assertNotIn("M300Control:: gpsToXy", qnames)
+        for z in data["zero_refs"]:                       # 零引用表无带空格名
+            self.assertNotIn(" ", z["name"])
+
+    def test_p0_2_ts_lang_routing_and_deps(self):
+        from dev_langs import EXT_LANG, get_adapter
+        self.assertEqual(EXT_LANG[".ts"], "typescript")   # 曾误报 javascript
+        self.assertEqual(EXT_LANG[".tsx"], "tsx")
+        self.assertEqual(EXT_LANG[".js"], "javascript")
+        self.assertEqual(get_adapter(".ts").grammar, "typescript")
+        deps = get_adapter(".ts").scan_deps(b'import { x } from "./util";\n')
+        self.assertEqual(deps, ["./util"])                # 曾硬编码 javascript 语法
+
+    def test_p0_4_code_exts_removed(self):
+        import dev_langs
+        import dev_langs.registry as reg
+        self.assertFalse(hasattr(dev_langs, "CODE_EXTS"))
+        self.assertFalse(hasattr(reg, "CODE_EXTS"))
+
+    def test_p0_5_missing_grammar_degrades_not_exits(self):
+        from dev_langs import MissingGrammar, get_parser
+        # 未注册语言 → MissingGrammar（可捕获），不再 SystemExit
+        with self.assertRaises(MissingGrammar):
+            get_parser("zz_fake_lang")
+        # 盘点降级：该语言无符号、notes 标注、langs 标 degraded，进程不退出
+        tmp = self._tmp()
+        self._write(tmp, {"src/p/app.py": "def hi():\n    return 1\n"})
+        from dev_langs import base
+        orig_gm, orig_ae = base.grammar_module, inv.available_extractors
+        orig_cache = base._PARSER_CACHE
+        base.grammar_module = lambda lang: ("tree_sitter_nonexistent_pkg_xyz", "language")
+        inv.available_extractors = lambda: {"python": {"extractor": "missing",
+                                                       "version": ""}}
+        base._PARSER_CACHE = {}          # 清缓存，确保真正走到缺包路径
+        try:
+            data = inv.build_inventory(tmp, project_type="generic")
+        finally:
+            base.grammar_module, inv.available_extractors = orig_gm, orig_ae
+            base._PARSER_CACHE = orig_cache
+        self.assertEqual(data["symbols"], [])
+        notes = " ".join(n.get("note", "") for n in data["confidence"]["notes"])
+        self.assertIn("missing_grammar", notes)
+        self.assertEqual(data["langs"].get("python"), "degraded")
+
+    def test_p1_2_deps_array_on_all_modules(self):
+        tmp = self._tmp()
+        self._write(tmp, {
+            "src/p/package.xml": "<package><name>p</name></package>",
+            "src/p/src/a.cpp": "int f() { return 1; }\n",
+            "scripts/run.py": "import os\n",
+        })
+        data = inv.build_inventory(tmp, project_type="catkin")
+        for m in data["modules"]:
+            self.assertIsInstance(m.get("deps"), list, m["id"])   # 无 deps 缺键
+
+    def test_p1_5_constructor_exempt_from_zero_refs(self):
+        tmp = self._tmp()
+        self._write(tmp, {"src/a/index.js": "class A {\n  constructor() {}\n}\n"})
+        data = inv.build_inventory(tmp, project_type="generic")
+        names = {z["name"] for z in data["zero_refs"]}
+        self.assertNotIn("constructor", names)            # 框架隐式调用，曾进噪音
+        self.assertIn("A", names)                         # 类本身零引用仍如实报告
 
 
 class LineKindTs(unittest.TestCase):

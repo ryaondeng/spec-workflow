@@ -19,7 +19,8 @@ import xml.etree.ElementTree as ET
 from collections import OrderedDict
 
 from dev_langs import (  # noqa: F401  （EXT_LANG 对外兼容导出）
-    EXT_LANG, get_adapter, identifier_counts, is_test_file, macro_defs,
+    EXT_LANG, ambiguous_test_stem, available_extractors, get_adapter,
+    identifier_counts, is_test_file, macro_defs,
 )
 
 # ---------------- 常量 ----------------
@@ -131,11 +132,14 @@ def iter_code_files(root, extra_exclude):
 
 def detect_langs(root, extra_exclude):
     langs = OrderedDict()
+    # v1.5.7（外评 P0-5）：语法包缺失的语言标 degraded（不阻断盘点，但报告可见）
+    missing = {lang for lang, i in available_extractors().items()
+               if i.get("extractor") == "missing"}
     for fp in iter_code_files(root, extra_exclude):
         ext = os.path.splitext(fp)[1].lower()
         lang = EXT_LANG.get(ext)
         if lang:
-            langs.setdefault(lang, "reliable")  # tree-sitter 适配器全档 reliable
+            langs.setdefault(lang, "degraded" if lang in missing else "reliable")
     return dict(langs)
 
 
@@ -414,9 +418,11 @@ def _leaf_name(qname):
 
 
 def _is_entry_like(name):
-    """入口/协议名（main、__init__ 等双下划线协议方法）：被框架/运行时隐式调用，
-    源码零引用是常态——不参与零引用提示（防误报）。"""
-    return name == "main" or (name.startswith("__") and name.endswith("__"))
+    """入口/协议名（main、__init__、constructor 等被框架/运行时隐式调用的名字）：
+    源码零引用是常态——不参与零引用提示（防误报；v1.5.7 补 constructor，外评 P1-5）。"""
+    return (name == "main"
+            or name in ("constructor", "__construct__")
+            or (name.startswith("__") and name.endswith("__")))
 
 
 def build_ref_counts(root, extra, symbols):
@@ -504,6 +510,7 @@ def build_inventory(root, extra_exclude=None, project_type="auto"):
     file_mod = {}          # rel -> module id（含跳过符号的文件，供 include 依赖映射）
     include_records = []   # (rel, [include 字面量]) —— C++/JS 等适配器提供
 
+    deferred = []          # (fp, adapter, rel, mid)：裸 test 文件延后扫描
     for fp in iter_code_files(root, extra):
         ext = os.path.splitext(fp)[1].lower()
         adapter = get_adapter(ext)
@@ -516,12 +523,38 @@ def build_inventory(root, extra_exclude=None, project_type="auto"):
         if is_test_file(rel):
             code_file_hashes[rel] = sha256_file(fp)
             continue
+        if ambiguous_test_stem(rel):   # C/C++ 裸 test.cpp：不判测试，但提示人工确认
+            confidence_notes.append({"file": rel,
+                                     "note": "ambiguous_test_stem（裸 test 主文件名，"
+                                             "按非测试处理；如确为测试请移入 tests/ 或改名）"})
+            deferred.append((fp, adapter, rel, mid))
+            code_file_hashes[rel] = sha256_file(fp)
+            continue
         try:
             with open(fp, "rb") as fh:
                 data = fh.read()
         except OSError:
             continue
         code_file_hashes[rel] = sha256_file(fp)
+        syms, eps, ifaces, notes = adapter.scan(data, rel, mid, counters)
+        if hasattr(adapter, "scan_deps"):
+            include_records.append((rel, adapter.scan_deps(data)))
+        symbols.extend(syms)
+        endpoints.extend(eps)
+        interfaces.extend(ifaces)
+        for n in notes:
+            confidence_notes.append({"file": rel,
+                                     "note": n.get("note") if isinstance(n, dict) else str(n)})
+
+    # 延后扫描裸 test 文件（v1.5.7 锚点稳定不变式）：此前这些文件不产符号，若按
+    # 文件序插入会让 counters 中途递增、**移位后续全部 FUN-ID**、冲掉存量文档锚点；
+    # 追加到 ID 序列末尾则既有 ID 逐字节不变，只有全新符号获得新 ID。
+    for fp, adapter, rel, mid in deferred:
+        try:
+            with open(fp, "rb") as fh:
+                data = fh.read()
+        except OSError:
+            continue
         syms, eps, ifaces, notes = adapter.scan(data, rel, mid, counters)
         if hasattr(adapter, "scan_deps"):
             include_records.append((rel, adapter.scan_deps(data)))
@@ -552,6 +585,10 @@ def build_inventory(root, extra_exclude=None, project_type="auto"):
             inc_deps = include_deps.get(m["id"])
             if inc_deps:
                 m["deps"] = sorted((set(m.get("deps") or []) | inc_deps) - {m["id"]})
+
+    # v1.5.7（外评 P1-2）：所有模块统一 deps 字段为数组（此前仅 python/package 分支有键）
+    for m in modules:
+        m.setdefault("deps", [])
 
     tests = collect_tests(root, extra)
 

@@ -1,26 +1,30 @@
 # -*- coding: utf-8 -*-
-"""dev_langs.js_ts — JavaScript/TypeScript 适配器（tree-sitter 实现）。
+"""dev_langs.js_ts — JavaScript / TypeScript / TSX 适配器（tree-sitter 实现）。
 
+收集范围：
 - function_declaration / method_definition / class_declaration
-- 箭头函数赋值（const f = (…) => …）→ kind=function（对齐旧 _TS_CONSTFN 语义）
-- scan_deps：import 语句源
+- 箭头函数赋值（const f = (…) => …）→ kind=function
+- scan_deps：import 语句源（按扩展名选语法解析，与主扫描一致）
 - 语法：.js/.mjs/.cjs → javascript；.ts → typescript；.tsx → tsx
+
+v1.5.7（外评 P0-2/P0-3）：拆分为 Js/Ts/Tsx 三个适配器——此前单适配器
+lang="javascript" 使 .ts 被报告为 javascript、EXT_LANG/doctor/依赖扫描全部失真；
+拆分后每个适配器 lang/grammar 自洽（EXT_LANG: .ts→typescript，.tsx→tsx），
+scan_deps 也不再硬编码语法。
 """
-from .base import LanguageAdapter, node_text, parse_tree
+from .base import LanguageAdapter, node_text, parse_tree, walk
 
 
 def _grammar_for(ext):
-    if ext in (".ts",):
+    if ext == ".ts":
         return "typescript"
-    if ext in (".tsx",):
+    if ext == ".tsx":
         return "tsx"
     return "javascript"
 
 
-class JsTsTreeSitterAdapter(LanguageAdapter):
-    lang = "javascript"
-    exts = (".js", ".mjs", ".cjs", ".ts", ".tsx")
-    grammar = "javascript"   # .ts/.tsx 动态切换 typescript/tsx 语法（_grammar_for）
+class _JsTsBase(LanguageAdapter):
+    """共享扫描实现（Js/Ts/Tsx 三适配器复用；语法树结构同族）。"""
 
     def _scan(self, data, rel_path, module_id, counters):
         grammar = _grammar_for("." + rel_path.lower().rsplit(".", 1)[-1])
@@ -84,10 +88,10 @@ class JsTsTreeSitterAdapter(LanguageAdapter):
         return symbols, [], [], []
 
     def scan_deps(self, data):
-        # 复用主扫描（deps 已在 _scan 中收集）；此处独立解析避免状态耦合
-        tree, root = parse_tree("javascript", data)
+        # 独立解析收集 import 源；语法按子类 grammar（与该适配器扩展名族一致）
+        tree, root = parse_tree(self.grammar, data)
         out = []
-        for node in _walk(root):
+        for node in walk(root):
             if node.type == "import_statement":
                 src = node.child_by_field_name("source")
                 if src is not None:
@@ -95,10 +99,19 @@ class JsTsTreeSitterAdapter(LanguageAdapter):
         return out
 
 
-def _walk(node):
-    stack = [node]
-    while stack:
-        cur = stack.pop()
-        yield cur
-        for ch in reversed(cur.children):
-            stack.append(ch)
+class JsTreeSitterAdapter(_JsTsBase):
+    lang = "javascript"
+    exts = (".js", ".mjs", ".cjs")
+    grammar = "javascript"
+
+
+class TsTreeSitterAdapter(_JsTsBase):
+    lang = "typescript"
+    exts = (".ts",)
+    grammar = "typescript"
+
+
+class TsxTreeSitterAdapter(_JsTsBase):
+    lang = "tsx"
+    exts = (".tsx",)
+    grammar = "tsx"

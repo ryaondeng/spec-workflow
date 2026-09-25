@@ -45,20 +45,33 @@ def grammar_version(lang):
         return None
 
 
+class MissingGrammar(Exception):
+    """单个语言语法包缺失（v1.5.7，外评 P0-5）：可降级——跳过该语言、其余照常盘点。
+    区别于 tree-sitter 本体缺失（SystemExit）：那是环境没装对，降级无意义。"""
+
+
 def get_parser(lang):
-    """按语言取 tree-sitter Parser（进程内单例）。语法包缺失时抛出带安装指引的异常。"""
+    """按语言取 tree-sitter Parser（进程内单例）。
+
+    语法包缺失 → MissingGrammar（调用方可降级）；tree-sitter 本体缺失 →
+    SystemExit（环境问题，带安装指引）。"""
     if lang in _PARSER_CACHE:
         return _PARSER_CACHE[lang]
     try:
         from tree_sitter import Language, Parser
-        import importlib
-        module_name, func_name = grammar_module(lang)
-        mod = importlib.import_module(module_name)
-        parser = Parser(Language(getattr(mod, func_name)()))
     except ImportError as e:
         raise SystemExit(
             "缺少运行时依赖 tree-sitter（%s）：请执行 pip install -r skills/dev-docs/requirements.txt" % e
         )
+    import importlib
+    module_name, func_name = grammar_module(lang)
+    try:
+        mod = importlib.import_module(module_name)
+    except ImportError as e:
+        raise MissingGrammar(
+            "语法包缺失：%s（pip install %s）—— %s" % (lang, module_name.replace("_", "-"), e)
+        )
+    parser = Parser(Language(getattr(mod, func_name)()))
     _PARSER_CACHE[lang] = parser
     return parser
 
@@ -169,7 +182,7 @@ def _line_kinds_for_file(abs_path, grammar):
                     kinds.setdefault(row + 1, kind)
             elif start_row < len(src_lines) and src_lines[start_row].strip() == raw.strip():
                 kinds.setdefault(start_row + 1, kind)   # 单行：整行即该节点
-    except (OSError, SystemExit):
+    except (OSError, SystemExit, MissingGrammar):
         kinds = {}
     _LINE_KIND_CACHE[abs_path] = kinds
     return kinds
@@ -215,7 +228,7 @@ def decl_lines(abs_path):
             for node in walk(root):
                 if node.type in _DECL_NODE_TYPES:
                     out.setdefault(node.start_point[0] + 1, set()).add(node.type)
-        except (OSError, SystemExit):
+        except (OSError, SystemExit, MissingGrammar):
             out = {}
     out = {k: frozenset(v) for k, v in out.items()}
     _DECL_LINE_CACHE[abs_path] = out
@@ -259,7 +272,7 @@ def docstrings_by_def_line(abs_path):
                 text = raw.strip().strip("\"'").strip()
                 if text:
                     out[node.start_point[0] + 1] = " ".join(text.split()[:24])[:160]
-        except (OSError, SystemExit):
+        except (OSError, SystemExit, MissingGrammar):
             out = {}
     _DOCSTRING_CACHE[abs_path] = out
     return out
@@ -305,7 +318,7 @@ def identifier_counts(abs_path):
                 if node.type in kinds:
                     name = data[node.start_byte:node.end_byte].decode("utf-8", "replace")
                     out[name] = out.get(name, 0) + 1
-        except (OSError, SystemExit):
+        except (OSError, SystemExit, MissingGrammar):
             out = {}
     _IDENT_COUNT_CACHE[abs_path] = out
     return out
@@ -330,7 +343,7 @@ def macro_defs(abs_path):
                     nm = node.child_by_field_name("name")
                     if nm is not None:
                         out.append((node_text(data, nm), node.start_point[0] + 1))
-        except (OSError, SystemExit):
+        except (OSError, SystemExit, MissingGrammar):
             out = []
     _MACRO_CACHE[abs_path] = out
     return out
@@ -349,17 +362,31 @@ def walk(node):
 # 测试文件判定（跨语言统一口径：只入测试索引，不生成文档符号/卡片）
 _TEST_DIR_RE = re.compile(r"(^|/)(tests?|__tests__|spec)(/|$)", re.I)
 _TEST_STEM = re.compile(r"^(tests?|test[_.\-].*|.*[_.\-]test)$", re.I)
+# C/C++ 收紧（v1.5.7，外评 P1-3）：裸 `test.cpp` 常是真实节点名（实测 ROS 节点
+# ros::init("test300") 被误判测试、符号全无），只认 test_*/…_test；裸名交给
+# dev_inventory 记 ambiguous note 提示人工确认。
+_TEST_STEM_C = re.compile(r"^(test[_.\-].*|.*[_.\-]test)$", re.I)
+_C_FAMILY_EXTS = (".c", ".cpp", ".cc", ".cxx", ".h", ".hpp", ".hh")
 
 
 def is_test_file(rel_path):
     """是否为测试文件：位于 tests//test//__tests__//spec/ 目录，或文件名形如
-    `test.cpp` / `test_foo.py` / `foo_test.cpp` / `tests.py`（跨语言统一）。"""
+    `test_foo.py` / `foo_test.cpp` / `tests.py`；C/C++ 裸 `test.cpp` **不**判测试。"""
     rel = (rel_path or "").replace("\\", "/")
     base = rel.rsplit("/", 1)[-1]
     if _TEST_DIR_RE.search(rel):
         return True
-    stem = base.rsplit(".", 1)[0] if "." in base else base
-    return bool(_TEST_STEM.match(stem))
+    stem, _, ext = base.partition(".")
+    ext = ("." + ext.lower()) if ext else ""
+    rx = _TEST_STEM_C if ext in _C_FAMILY_EXTS else _TEST_STEM
+    return bool(rx.match(stem))
+
+
+def ambiguous_test_stem(rel_path):
+    """C/C++ 裸 `test` 主文件名（不判测试但有歧义）→ True（供盘点记 note）。"""
+    base = (rel_path or "").replace("\\", "/").rsplit("/", 1)[-1]
+    stem, _, ext = base.partition(".")
+    return stem.lower() == "test" and ("." + ext.lower() if ext else "") in _C_FAMILY_EXTS
 
 
 def sig_from_lines(lines, row0):
@@ -396,9 +423,11 @@ class LanguageAdapter:
     capability = "reliable"
 
     def scan(self, data, rel_path, module_id, counters):
-        """统一入口（含单文件异常兜底）。"""
+        """统一入口（含单文件异常兜底与语法包缺失降级）。"""
         try:
             return self._scan(data, rel_path, module_id, counters)
+        except MissingGrammar as e:  # 缺语法包：跳过该文件并记 note（其余语言照常）
+            return [], [], [], [{"note": "missing_grammar %s: %s" % (self.lang, e)}]
         except Exception as e:  # noqa: BLE001 单文件异常不拖垮盘点
             return [], [], [], [{"note": "adapter_error %s: %s" % (self.lang, e)}]
 

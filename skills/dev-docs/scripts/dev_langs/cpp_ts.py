@@ -42,8 +42,9 @@ def _decl_name(data, fn_node):
     t = node_text(data, seen)
     if "::" in t:
         cls, name = t.rsplit("::", 1)
-        return name, cls or None
-    return t, None
+        # 归一：源码里 `Cls::\n    fn(` 换行/空格会混入文本（P0-1），strip 统一 qname
+        return name.strip(), (cls.strip() or None)
+    return t.strip(), None
 
 
 def _sig_text(data, node):

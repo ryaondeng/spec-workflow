@@ -4,7 +4,7 @@ from .bash_ts import BashTreeSitterAdapter
 from .c_ts import CTreeSitterAdapter
 from .cpp_ts import CppTreeSitterAdapter
 from .java_ts import JavaTreeSitterAdapter
-from .js_ts import JsTsTreeSitterAdapter
+from .js_ts import JsTreeSitterAdapter, TsTreeSitterAdapter, TsxTreeSitterAdapter
 from .python_ts import PythonTreeSitterAdapter
 from .text_msgsrv import MsgSrvTextAdapter
 
@@ -13,16 +13,15 @@ _ADAPTERS = (
     CppTreeSitterAdapter(),
     CTreeSitterAdapter(),
     JavaTreeSitterAdapter(),
-    JsTsTreeSitterAdapter(),
+    JsTreeSitterAdapter(),
+    TsTreeSitterAdapter(),
+    TsxTreeSitterAdapter(),
     BashTreeSitterAdapter(),
     MsgSrvTextAdapter(),
 )
 
 # ext -> lang（保持原 dev_inventory.EXT_LANG 的对外语义；value 为语言名）
 EXT_LANG = {ext: a.lang for a in _ADAPTERS for ext in a.exts}
-
-# 参与模块划分/文件归属的扩展名（在 LANG_TABLE 之上追加配置/接口定义类）
-CODE_EXTS = frozenset(EXT_LANG) | {".launch", ".cmake", ".gradle", ".proto"}
 
 _BY_EXT = {}
 for _a in _ADAPTERS:
@@ -40,7 +39,11 @@ def adapters():
 
 
 def available_extractors():
-    """语言 -> {extractor, version}（doctor/报告展示用）。"""
+    """语言 -> {extractor, version}（doctor/报告展示用）。
+
+    v1.5.7（外评 P0-3）：探测覆盖适配器**实际会用到的全部语法**（grammar 属性），
+    而非仅主语法——此前 JsTs 单适配器 grammar=javascript，tree_sitter_typescript
+    缺失时 doctor 仍全绿，.ts 一解析才 SystemExit。"""
     import importlib
     from .base import grammar_module, grammar_version
     out = {}

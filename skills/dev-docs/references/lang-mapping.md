@@ -9,14 +9,21 @@
 | 语言 | 扩展名 | 适配器 | 能力 | 备注 |
 |:---|:---|:---|:---|:---|
 | Python | `.py` | `python_ts` | reliable | 顶层函数 + 类方法；`_` 私有不入表；装饰器路由端点（FastAPI/Flask） |
-| C++ | `.cpp .cc .cxx .hpp .hh .h` | `cpp_ts` | reliable | qualified 名拆 `::` → 类归属；匿名命名空间跳过；宏调用不产符号 |
+| C++ | `.cpp .cc .cxx .hpp .hh .h` | `cpp_ts` | reliable | qualified 名拆 `::` → 类归属（归一 strip）；匿名命名空间跳过；宏调用不产符号 |
 | C | `.c` | `c_ts` | reliable | 复用 cpp 规则（c 语法） |
 | Java | `.java` | `java_ts` | reliable | `@*Mapping` 注解端点 |
-| JavaScript | `.js .mjs .cjs` | `js_ts` | reliable | 函数/类方法/箭头函数赋值 |
-| TypeScript | `.ts .tsx` | `js_ts` | reliable | 同上（typescript/tsx 语法） |
+| JavaScript | `.js .mjs .cjs` | `js_ts` | reliable | 函数/类方法/箭头函数赋值；**无 HTTP 端点识别**（Express/Koa 等路由不产 API-，语义地图/register 兜底） |
+| TypeScript | `.ts` | `js_ts` | reliable | 同 JS（typescript 语法；v1.5.7 起独立适配器，`langs` 正确报告 typescript） |
+| TSX | `.tsx` | `js_ts` | reliable | 同上（tsx 语法）；**`.vue` 不支持**（SFC 仅进 L0 全集，语义地图归属兜底） |
 | Shell | `.sh` | `bash_ts` | reliable | 函数 + `source` 依赖 |
-| ROS msg/srv | `.msg .srv` | `text_msgsrv` | reliable（text） | 唯一非 tree-sitter 路径：无官方 grammar；产出 `inventory.interfaces`（MSG-/SRV-）并纳入对账 |
+| ROS msg/srv | `.msg .srv` | `text_msgsrv` | reliable（text） | 唯一非 tree-sitter 路径：无官方 grammar；产出 `inventory.interfaces`（MSG-/SRV-）并纳入对账；字段行尾注释保留为 `comment` |
 | Go/Rust/Ruby/PHP/Kotlin… | — | 未注册 | unsupported | 文件仍进 L0 全集（防漏锚）；用语义地图归属 + `register` 登记（SYM/EPT/ITF）兜底 |
+
+> **`langs` 值含义**：`reliable` = 语法包齐、符号级抽取可用；`degraded` = 该语言语法包
+> 缺失——文件仍进全集但不产符号（`pip install -r skills/dev-docs/requirements.txt` 补齐）。
+> **仅进 L0 的扩展名**（不参与符号提取/模块划分）：`.vue .proto .launch .cmake .gradle`
+> `.scss .css .html .yaml .xml(非 package.xml)` 等——如实口径，语义地图 `ignored_files`
+> 或归属兜底。
 
 ## 2. 入口与契约发现约定（AI 补 architecture/模块四问时用）
 
@@ -25,7 +32,7 @@
 | 入口 | `main.py`/Spring `Application` | `cmd/`、`__main__.py` | `ros::init` + `ros::spin`（节点 main） | `__init__.py`、export |
 | 契约来源 | 路由注册 + handler 签名 | argparse/cobra/clap 子命令 | 话题 pub/sub + .msg/.srv 接口定义 | `__all__`/export |
 | 数据模型 | ORM Model / dataclass | 配置文件 | `.msg` 字段 / struct（database.h 式协议结构体） | 类型声明 |
-| 测试约定 | **跨语言统一**（v1.5）：位于 `tests/`/`test/`/`__tests__/`/`spec/` 目录，或文件名形如 `test.cpp`/`test_*.py`/`*_test.cpp`/`tests.py` → 只入 `tests` 索引，**不生成符号卡片**（`dev_langs.base.is_test_file`） | 同上 | rostest 同理按文件名判定 | 同上 |
+| 测试约定 | **跨语言统一**（v1.5.7 分级）：位于 `tests/`/`test/`/`__tests__/`/`spec/` 目录，或文件名 `test_*.py`/`*_test.cpp`/`tests.py` 等 → 只入 `tests` 索引，**不生成符号卡片**；**C/C++ 裸 `test.cpp` 不判测试**（实测误伤真实节点名），按非测试处理并记 `ambiguous_test_stem` note（`dev_langs.base.is_test_file`） | 同上 | rostest 同理按文件名判定 | 同上 |
 
 ## 3. 跨语言执行要点
 

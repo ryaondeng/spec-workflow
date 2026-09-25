@@ -1,6 +1,6 @@
 ---
 name: dev-docs
-version: 1.5.6
+version: 1.5.7
 description: >
   从已有代码库反建技术文档（dev-docs）：面向没有接口/设计/架构文档的存量项目，
   用「规则提取（文件全集/机器盘点/对账漂移）+ LLM 提取（AI 通读建语义地图再按模板填文档）」双轨机制，
@@ -31,6 +31,9 @@ description: >
 ## 系统要求（跨平台）
 
 - Python 3.12+，运行时依赖 tree-sitter（v1.5 起全语言统一抽取；安装器自动 `pip install -r skills/dev-docs/requirements.txt`，手动安装亦可）。Windows / Linux / macOS 原生可跑。
+- **语法包缺失不硬退出**（v1.5.7）：`inventory` 对缺失语言降级（`langs` 标 `degraded`，
+  notes 记 `missing_grammar`），其余语言照常；`doctor` 会列明缺失语法包并 exit 1。
+  **排查环境先跑 `doctor`**（CLI 速记第一条）。
 - Windows 若没有 `python3` 启动名，用 `python` 或 `py -3` 替代下文命令中的 `python3`。
 - 生成产物统一 LF 换行（脚本跨平台固定 `newline="\n"`）：任何平台生成结果字节一致，
   确定性（byte-identical）与 git diff / CI 漂移检测不受换行符影响。
@@ -131,7 +134,11 @@ python3 <skill_dir>/scripts/dev_docs.py check --dir <目标项目>
 
 ## CLI 速记
 
+> 排查"为什么没符号/语言没盘出来"先跑 `doctor`：显示 Python / tree-sitter 版本、
+> 各语言语法包可用性（缺失标 ✗）、产物状态。**建议作为任何链路的前置步骤**。
+
 ```text
+dev_docs.py doctor    --dir <目标项目>                # 环境与能力自检（语法包缺失会列明并 exit 1）
 dev_docs.py inventory --dir <目标项目> [--out <子目录名=dev-docs>] [--exclude 额外排除]
                       [--project-type auto|catkin|generic]
                       # 文件全集 + 符号/端点 + 哈希基线（catkin 自动排除 build/devel/install/log）
