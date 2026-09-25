@@ -1683,6 +1683,11 @@ def cmd_check(inv_data, out, drift, root=None, strict=False):
                      % len(rep["ref_line_issues"]))
     if rep["has_semantic_map"] and rep["file_uncovered"]:
         warns.append("文件未归属 %d 个（语义地图 files/ignored_files 未覆盖）" % len(rep["file_uncovered"]))
+    # v1.5.8（外评 P1-7）：解析错误浮出水面——普通模式 warn，--strict 升 ERROR
+    scan_errors = inv_data.get("scan_errors") or []
+    if scan_errors:
+        warns.append("单文件解析失败 %d 处（该文件符号/契约可能缺失，详见下方 scan_error）"
+                     % len(scan_errors))
     print("=== dev-docs check ===")
     print("登记符号/端点：%d / %d　文档文件：%d　人工登记：%d" %
           (rep["registered_count"], rep["want_count"], rep["doc_count"],
@@ -1753,6 +1758,9 @@ def cmd_check(inv_data, out, drift, root=None, strict=False):
         # v1.5 交付口径：卡片语义未填尽 = ERROR（此前仅打印、未计入失败，门禁实际失效）
         errors = errors + ["semantic_todo_left(%s %d 处)" % (k, v)
                            for k, v in sorted(per.items()) if v]
+    if strict and scan_errors:
+        errors = errors + ["scan_error(%s: %s)" % (n.get("file"), n.get("note"))
+                           for n in scan_errors]
     for label, items, fix in groups:
         if items:
             print("[%s] %d 项（%s）:" % (label, len(items), fix))
@@ -1767,6 +1775,13 @@ def cmd_check(inv_data, out, drift, root=None, strict=False):
         for it in build_issues[:10]:
             print("    - %s（%s）：%s" % (it["name"], it["module_path"],
                                           "、".join(it["missing"][:5])))
+    if scan_errors:
+        print("[scan_error(单文件解析失败——该文件符号/契约可能缺失；"
+              "缺语法包先补装再重跑 inventory)] %d 项:" % len(scan_errors))
+        for n in scan_errors[:10]:
+            print("    - %s：%s" % (n.get("file"), n.get("note")))
+        if len(scan_errors) > 10:
+            print("    ... 共 %d" % len(scan_errors))
     zero = inv_data.get("zero_refs") or []
     if zero:
         print("[zero_ref(源码零引用的名称——疑似死代码/仅供框架回调；提示，不计失败)] %d 项:" % len(zero))
@@ -2080,6 +2095,9 @@ def cmd_doctor(root, out):
             len(data.get("files") or []), len(data.get("modules") or []),
             len(data.get("symbols") or []), len(data.get("interfaces") or []))
         if data else ""))
+    if data and (data.get("scan_errors")):
+        print("             ⚠ 解析失败 %d 个文件（inventory.scan_errors——该文件符号可能缺失）"
+              % len(data["scan_errors"]))
     print("             plan %s | 语义地图 %s | 登记 %s | 基线 %s" % (
         "有" if os.path.exists(os.path.join(out, PLAN_FILE)) else "无",
         "有" if os.path.exists(os.path.join(out, SEMANTIC_MAP_FILE)) else "无",
@@ -2362,6 +2380,8 @@ def main(argv=None):
     ap.add_argument("--json", action="store_true", help="brief：输出 JSON（供 Agent 消费）")
     ap.add_argument("--strict", action="store_true", help="check：把 warn（AI-FILL 残留/文件未归属）升级为 ERROR")
     ap.add_argument("--exclude", action="append", default=[], help="额外排除模式（可多次）")
+    ap.add_argument("--include", action="append", default=[],
+                    help="排除白名单（可多次）：解除同名默认排除项，如 --include migrations")
     ap.add_argument("--drift", action="store_true", help="check 时重扫与基线对比漂移")
     ap.add_argument("--file", help="promote 的 draft 文件路径（相对 docs/<out>/ 或绝对路径）")
     ap.add_argument("--project-type", choices=["auto", "catkin", "generic"], default="auto",
@@ -2378,6 +2398,7 @@ def main(argv=None):
                     help="audit 的卡片抽样上限（默认 15）")
     a = ap.parse_args(argv)
 
+    inv.set_include_allowlist(a.include)   # v1.5.8 P1-8：--include 白名单（进程级单点）
     root = resolve_root(a.dir)
     out = outdir(root, a.out)
 

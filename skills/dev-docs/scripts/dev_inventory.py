@@ -31,11 +31,24 @@ CATKIN_EXCLUDE = ["build", "devel", "install", "log"]
 ALL_FILES_MAX_BYTES = 2 * 1024 * 1024
 
 DEFAULT_EXCLUDE = [
-    ".git", "node_modules", "__pycache__", "dist", "build", "out", "target",
+    ".git", "node_modules", "__pycache__", "dist", "build",
     ".venv", "venv", "vendor", ".idea", ".vscode", ".codebuddy", ".specworkflow",
     "*.pyc", "*.pyo", "*.egg-info", "*.min.js", "*.map", ".d.ts",
-    "migrations", "coverage", ".pytest_cache", ".tox", ".mypy_cache", "generated-images",
+    "coverage", ".pytest_cache", ".tox", ".mypy_cache", "generated-images",
 ]
+# v1.5.8（外评 P1-8）从默认排除移除 "migrations"/"target"/"out"：三者按目录名全局匹配
+# 误伤真实源码目录（如 Django 项目源码就叫 migrations），且移除后噪音可控；
+# 确需排除时用 --exclude 追加。--include 白名单可解除任意默认排除（见 is_excluded）。
+
+# --include 白名单（进程级单点）：命中的排除模式名不生效（P1-8）
+_ACTIVE_INCLUDE = frozenset()
+
+
+def set_include_allowlist(names):
+    """设置 --include 白名单（目录/文件名列表）：同名默认排除项失效。"""
+    global _ACTIVE_INCLUDE
+    _ACTIVE_INCLUDE = frozenset(names or [])
+
 
 SCHEMA_VERSION = 2
 
@@ -100,7 +113,10 @@ def canon_hash(obj):
 def is_excluded(rel_path, extra):
     parts = rel_path.replace("\\", "/").split("/")
     name = parts[-1]
+    inc = _ACTIVE_INCLUDE
     for pat in list(DEFAULT_EXCLUDE) + (extra or []):
+        if pat in inc:
+            continue                      # --include 白名单：解除同名排除（P1-8）
         if pat.startswith("*."):
             if name.endswith(pat[1:]):
                 return True
@@ -567,7 +583,8 @@ def build_inventory(root, extra_exclude=None, project_type="auto"):
     # 模块依赖（python import 启发）
     _mod_deps(modules, root, extra)
 
-    # include 依赖映射：C++ 本地头（"pkg/path.h"）→ 项目内文件 → 目标模块
+    # include/导入依赖映射：C++ 本地头（"pkg/path.h"）与 JS/TS 相对导入（./x、@/x）
+    # → 项目内文件 → 目标模块（v1.5.8 P1-1：此前 JS/TS 的 ./ ../ @/ 完全未解析）
     if include_records:
         include_deps = {}
         for rel, incs in include_records:
@@ -577,6 +594,17 @@ def build_inventory(root, extra_exclude=None, project_type="auto"):
             for inc in incs:
                 inc = inc.strip("<>\"'").strip()
                 if not inc:
+                    continue
+                if inc.startswith(("./", "../", "@/")):
+                    # JS/TS：相对导入按导入文件所在目录解析；@/ 约定为 src/ 根别名
+                    if inc.startswith("@/"):
+                        base = os.path.normpath("src/" + inc[2:])
+                    else:
+                        base = os.path.normpath(
+                            os.path.join(os.path.dirname(rel), inc))
+                    target = _resolve_js_target(base, file_mod)
+                    if target and file_mod[target] != src_mod:
+                        include_deps.setdefault(src_mod, set()).add(file_mod[target])
                     continue
                 for f_rel, f_mod in file_mod.items():
                     if f_mod != src_mod and (f_rel == inc or f_rel.endswith("/" + inc)):
@@ -602,6 +630,11 @@ def build_inventory(root, extra_exclude=None, project_type="auto"):
     files, files_hashes, file_notes = iter_all_files(root, extra)
     confidence_notes.extend(file_notes)
 
+    # v1.5.8（外评 P1-7）：单文件解析错误独立聚合——此前只埋在 confidence.notes
+    # 极易被忽略，坏文件"悄悄少符号"无人知晓；check/doctor 据此浮出。
+    scan_errors = [dict(n) for n in confidence_notes
+                   if str(n.get("note", "")).startswith(("adapter_error", "missing_grammar"))]
+
     # 为符号稳定 ID：扫描顺序已稳定（排序 + 文件内 AST 顺序），但多文件时 n 跨文件计数需要全局。
     # 处理：python 文件内 ID 是每文件局部；改成全局分配会破坏已生成文档锚点。
     # 结论：ID 采用 "<MOD>:<seq>" 稳定于排序文件顺序；为兼容锚点简单化，此处保留文件内局部 ID，
@@ -625,14 +658,25 @@ def build_inventory(root, extra_exclude=None, project_type="auto"):
         "files_hashes": files_hashes,
         "build_issues": build_issues,
         "zero_refs": zero_refs,
+        "scan_errors": scan_errors,
         "confidence": {"notes": confidence_notes},
     }
     return inventory
 
 
 def _mod_deps(modules, root, extra):
-    """python 模块间 import 启发依赖。"""
+    """python 模块间 import 启发依赖。
+
+    v1.5.8（外评 P1-1）包名探测：目录含 `__init__.py` 时把末段目录名注册为可导入
+    包名——`src/app/__init__.py` 存在则 `import app.core` 可映射到模块 `src/app`。
+    此前只按目录路径匹配（`src/app` ≠ `app`），非平凡布局全部失配 deps=[]。"""
     by_path = {m["path"]: m["id"] for m in modules}
+    by_name = {}
+    for m in modules:
+        if "python" not in m["langs"] or m["path"] in (".", ""):
+            continue
+        if os.path.isfile(os.path.join(root, m["path"], "__init__.py")):
+            by_name.setdefault(os.path.basename(m["path"]), m["id"])
     for m in modules:
         if "python" not in m["langs"]:
             continue
@@ -654,13 +698,32 @@ def _mod_deps(modules, root, extra):
                 for node in nodes:
                     if isinstance(node, ast.Import):
                         for a in node.names:
-                            _map_import_dep(deps, a.name, by_path)
+                            _map_import_dep(deps, a.name, by_path, by_name)
                     elif isinstance(node, ast.ImportFrom) and node.module:
-                        _map_import_dep(deps, node.module, by_path)
+                        _map_import_dep(deps, node.module, by_path, by_name)
         m["deps"] = sorted(deps - {m["id"]})
 
 
-def _map_import_dep(deps, imp, by_path):
+def _map_import_dep(deps, imp, by_path, by_name=None):
     for top in by_path:
         if imp == top or imp.startswith(top + "."):
             deps.add(by_path[top])
+            return
+    for name, mid in (by_name or {}).items():
+        if imp == name or imp.startswith(name + "."):
+            deps.add(mid)
+            return
+
+
+_JS_RESOLVE_EXTS = (".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx")
+
+
+def _resolve_js_target(base, file_mod):
+    """JS/TS 导入说明符 -> 项目内文件（精确 / +扩展名 / /index+扩展名；无则 None）。"""
+    cands = [base]
+    cands += [base + e for e in _JS_RESOLVE_EXTS]
+    cands += [os.path.join(base, "index" + e) for e in _JS_RESOLVE_EXTS]
+    for c in cands:
+        if c in file_mod:
+            return c
+    return None

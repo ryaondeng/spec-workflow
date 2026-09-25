@@ -16,6 +16,7 @@
   - bash 版 install.sh 需要 Git Bash / WSL（仅 Unix 风格 shell 环境）
 """
 import argparse
+import importlib
 import json
 import shutil
 import subprocess
@@ -32,6 +33,28 @@ def _meta_version(skill_dir):
         return str(data.get("version") or "")
     except (OSError, ValueError):
         return ""
+
+
+def _deps_selfcheck(repo_root):
+    """依赖自检（v1.5.8，外评 D-3）：按 requirements.txt 逐包 import 验证。
+
+    返回缺失包列表（pip 名）；此前依赖安装失败仅打印一行警告、退出码 0，
+    用户无感，跑 dev-docs 时才炸。"""
+    req = Path(repo_root) / "skills" / "dev-docs" / "requirements.txt"
+    if not req.is_file():
+        return []
+    missing = []
+    for raw in req.read_text(encoding="utf-8").splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line or not line.startswith("tree-sitter"):
+            continue
+        pip_name = line.split(">")[0].split("<")[0].split("=")[0].strip()
+        module_name = pip_name.replace("-", "_")
+        try:
+            importlib.import_module(module_name)
+        except ImportError:
+            missing.append(pip_name)
+    return missing
 
 
 def skills_src(repo_root):
@@ -138,9 +161,23 @@ def main(argv=None):
     elif a.skip_deps:
         print("[SKIP] 依赖安装（--skip-deps）；dev-docs 运行前需自行安装 tree-sitter 系依赖")
 
+    # 依赖自检（v1.5.8 D-3）：真实 import 验证，失败明确报错（CI 可感知）
+    missing = _deps_selfcheck(Path(__file__).resolve().parent)
+    if missing:
+        fix = "%s -m pip install %s" % (sys.executable, " ".join(missing))
+        if a.skip_deps:
+            print("⚠ 依赖自检失败（--skip-deps 模式仅警告）：%s\n  修复: %s"
+                  % ("、".join(missing), fix))
+        else:
+            print("❌ 依赖自检失败，以下包未装上: %s\n  修复: %s\n"
+                  "（dev-docs 缺包时会降级运行：对应语言不产符号）" % ("、".join(missing), fix))
+            return 1
+    else:
+        print("依赖自检 ✓（tree-sitter 及全部语法包可导入）")
+
     print("打开该项目的 AI 会话说「开始开发 X」或「恢复 X」即可使用；"
           "review 阶段质量门控由 spec-health-check 驱动")
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -431,6 +431,95 @@ class ExternalReviewB1(unittest.TestCase):
         self.assertIn("A", names)                         # 类本身零引用仍如实报告
 
 
+class ExternalReviewB2(unittest.TestCase):
+    """v1.5.8：外评修复 B2 批验收（P1-1/7/8/9）。"""
+
+    def _tmp(self):
+        import shutil
+        import tempfile
+        tmp = tempfile.mkdtemp(prefix="devlangs_b2_")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        return tmp
+
+    def _write(self, tmp, files):
+        import os
+        for rel, content in files.items():
+            fp = os.path.join(tmp, rel)
+            os.makedirs(os.path.dirname(fp), exist_ok=True)
+            with open(fp, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(content)
+
+    def test_p1_1_python_package_name_mapping(self):
+        tmp = self._tmp()
+        self._write(tmp, {
+            # pkg 有 __init__.py → 末段目录名注册为可导入包名（此前只按路径匹配，恒失配）
+            "pkg/__init__.py": "",
+            "pkg/core.py": "def f():\n    return 1\n",
+            "other/main.py": "from pkg.core import f\n",
+        })
+        data = inv.build_inventory(tmp, project_type="generic")
+        mods = {m["name"]: m for m in data["modules"]}
+        self.assertEqual(mods["other"]["deps"], [mods["pkg"]["id"]])
+
+    def test_p1_1_js_relative_and_alias_imports(self):
+        tmp = self._tmp()
+        self._write(tmp, {
+            "web/lib/util.js": "export function u() {}\n",
+            "web/main.js": 'import { u } from "./lib/util.js";\n',
+            "src/utils/x.js": "export const x = 1;\n",
+            "web/app.js": 'import { x } from "@/utils/x.js";\n',
+        })
+        data = inv.build_inventory(tmp, project_type="generic")
+        mods = {m["path"]: m for m in data["modules"]}
+        self.assertEqual(mods["web"]["deps"],
+                         sorted([mods["web/lib"]["id"], mods["src"]["id"]]))
+
+    def test_p1_7_scan_errors_aggregated(self):
+        tmp = self._tmp()
+        self._write(tmp, {"src/a/app.py": "def hi():\n    return 1\n"})
+        from dev_langs import python_ts
+        orig = python_ts.PythonTreeSitterAdapter._scan
+
+        def boom(self, data, rel, mid, counters):
+            raise RuntimeError("boom")
+
+        python_ts.PythonTreeSitterAdapter._scan = boom
+        try:
+            data = inv.build_inventory(tmp, project_type="generic")
+        finally:
+            python_ts.PythonTreeSitterAdapter._scan = orig
+        self.assertEqual(len(data["scan_errors"]), 1)        # 不再只埋 confidence.notes
+        self.assertIn("adapter_error", data["scan_errors"][0]["note"])
+        self.assertEqual(data["scan_errors"][0]["file"], "src/a/app.py")
+
+    def test_p1_8_include_allowlist_and_default_changes(self):
+        tmp = self._tmp()
+        self._write(tmp, {
+            "migrations/x.py": "def m():\n    return 1\n",   # 默认排除项已移除（P1-8）
+            "build/keep.py": "def k():\n    return 1\n",     # build 仍默认排除
+        })
+        self.addCleanup(inv.set_include_allowlist, [])
+        data = inv.build_inventory(tmp, project_type="generic")
+        names = {s["qname"] for s in data["symbols"]}
+        self.assertIn("m", names)                            # migrations 默认可扫
+        self.assertNotIn("k", names)                         # build 仍排除
+        # --include 白名单解除 build 排除
+        inv.set_include_allowlist(["build"])
+        data2 = inv.build_inventory(tmp, project_type="generic")
+        self.assertIn("k", {s["qname"] for s in data2["symbols"]})
+        # --exclude 追加可禁回 migrations
+        data3 = inv.build_inventory(tmp, extra_exclude=["migrations"],
+                                    project_type="generic")
+        self.assertNotIn("m", {s["qname"] for s in data3["symbols"]})
+
+    def test_p1_9_msg_field_comment_kept(self):
+        tmp = self._tmp()
+        self._write(tmp, {"ros_msgs/Num.msg": "# 状态\nint32 num  # 目标编号\n"})
+        data = inv.build_inventory(tmp, project_type="generic")
+        fields = [i for i in data["interfaces"] if i["kind"] == "msg"][0]["fields"]
+        self.assertEqual(fields[0].get("comment"), "目标编号")   # 此前注释被丢弃
+
+
 class LineKindTs(unittest.TestCase):
     """v1.5.2：语法层行性质判定——治"引用落在注释/字符串里"的假事实。"""
 

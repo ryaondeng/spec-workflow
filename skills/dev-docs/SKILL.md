@@ -1,6 +1,6 @@
 ---
 name: dev-docs
-version: 1.5.7
+version: 1.5.8
 description: >
   从已有代码库反建技术文档（dev-docs）：面向没有接口/设计/架构文档的存量项目，
   用「规则提取（文件全集/机器盘点/对账漂移）+ LLM 提取（AI 通读建语义地图再按模板填文档）」双轨机制，
@@ -140,8 +140,10 @@ python3 <skill_dir>/scripts/dev_docs.py check --dir <目标项目>
 ```text
 dev_docs.py doctor    --dir <目标项目>                # 环境与能力自检（语法包缺失会列明并 exit 1）
 dev_docs.py inventory --dir <目标项目> [--out <子目录名=dev-docs>] [--exclude 额外排除]
-                      [--project-type auto|catkin|generic]
-                      # 文件全集 + 符号/端点 + 哈希基线（catkin 自动排除 build/devel/install/log）
+                      [--include 排除白名单] [--project-type auto|catkin|generic]
+                      # 文件全集 + 符号/端点 + 哈希基线（catkin 自动排除 build/devel/install/log）；
+                      # --include 解除同名默认排除（如源码目录恰叫 migrations）；
+                      # 解析失败文件汇总在 scan_errors（check 普通模式 warn、--strict ERROR）
 dev_docs.py plan     --dir <目标项目> [--write] [--force] [--exclude 模式]
                      # 页面树（默认 dry-run 打印；--write 落盘 .devdocs-plan.json；重跑保留人工编辑）
 dev_docs.py brief    --dir <目标项目> --page <slug> [--json]

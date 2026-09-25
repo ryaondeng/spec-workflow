@@ -12,8 +12,17 @@ from .base import LanguageAdapter
 
 
 def _parse_field(line):
-    """一行 -> {type, name, array, constant}；非字段行返回 None。"""
-    s = line.split("#", 1)[0].strip()
+    """一行 -> {type, name, array, constant, comment?}；非字段行返回 None。
+
+    v1.5.8（外评 P1-9）：保留行尾 `#` 注释为 comment 字段（此前丢弃，
+    字段中文语义只能回读源码）。"""
+    comment = None
+    if "#" in line:
+        s, comment = line.split("#", 1)
+        comment = comment.strip() or None
+    else:
+        s = line
+    s = s.strip()
     if not s:
         return None
     parts = s.split(None, 1)
@@ -33,7 +42,10 @@ def _parse_field(line):
         name = rest
     if not name or not ftype:
         return None
-    return {"type": ftype, "name": name, "array": array, "constant": constant}
+    f = {"type": ftype, "name": name, "array": array, "constant": constant}
+    if comment:
+        f["comment"] = comment
+    return f
 
 
 def _parse_block(lines):
