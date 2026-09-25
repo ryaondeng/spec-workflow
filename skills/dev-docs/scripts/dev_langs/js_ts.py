@@ -4,6 +4,8 @@
 收集范围：
 - function_declaration / method_definition / class_declaration
 - 箭头函数赋值（const f = (…) => …）→ kind=function
+- HTTP 端点（v1.7.0 B4-3）：Express/Koa 风格 `app.get("path", handler)` 与
+  NestJS 风装饰器 `@Get("path")` → API- 端点（正则识别；变量路由如实缺失）
 - scan_deps：import 语句源（按扩展名选语法解析，与主扫描一致）
 - 语法：.js/.mjs/.cjs → javascript；.ts → typescript；.tsx → tsx
 
@@ -12,6 +14,8 @@ lang="javascript" 使 .ts 被报告为 javascript、EXT_LANG/doctor/依赖扫描
 拆分后每个适配器 lang/grammar 自洽（EXT_LANG: .ts→typescript，.tsx→tsx），
 scan_deps 也不再硬编码语法。
 """
+import re
+
 from .base import LanguageAdapter, node_text, parse_tree, walk
 
 
@@ -21,6 +25,41 @@ def _grammar_for(ext):
     if ext == ".tsx":
         return "tsx"
     return "javascript"
+
+
+# HTTP 端点（B4-3）：Express/Koa `app.get("path", handler)` + NestJS `@Get("path")`
+_EXPRESS_EP = re.compile(
+    r"\b(?:app|router|server|api)\.(get|post|put|patch|delete|all)\s*"
+    r"\(\s*['\"]([^'\"]+)['\"](?:\s*,\s*([A-Za-z_$][\w$.]*))?", re.I)
+_NEST_EP = re.compile(
+    r"@\(?(Get|Post|Put|Patch|Delete|All)\)?\s*\(\s*['\"]?([^'\")]*)['\"]?")
+
+
+def _in_comment(text, pos):
+    ls = text.rfind("\n", 0, pos) + 1
+    line = text[ls:pos]
+    return "//" in line or line.lstrip().startswith("*")
+
+
+def _scan_http_endpoints(text, counters, api_id, rel_path, module_id):
+    """文本级端点识别 -> [{id, method, path, handler, module, file, line}]（注释行跳过）。"""
+    out = []
+    for m in _EXPRESS_EP.finditer(text):
+        if _in_comment(text, m.start()):
+            continue
+        out.append({"id": api_id(counters), "method": [m.group(1).upper()],
+                    "path": m.group(2), "handler": m.group(3) or "unknown",
+                    "module": module_id, "file": rel_path,
+                    "line": text[:m.start()].count("\n") + 1})
+    for m in _NEST_EP.finditer(text):
+        if _in_comment(text, m.start()):
+            continue
+        out.append({"id": api_id(counters), "method": [m.group(1).upper()],
+                    "path": m.group(2) or "/", "handler": "unknown",
+                    "module": module_id, "file": rel_path,
+                    "line": text[:m.start()].count("\n") + 1})
+    out.sort(key=lambda e: e["id"])
+    return out
 
 
 class _JsTsBase(LanguageAdapter):
@@ -85,7 +124,10 @@ class _JsTsBase(LanguageAdapter):
                 visit(ch)
 
         visit(root)
-        return symbols, [], [], []
+        endpoints = _scan_http_endpoints(
+            data.decode("utf-8", "replace"), counters, self._api_id,
+            rel_path, module_id)
+        return symbols, endpoints, [], []
 
     def scan_deps(self, data):
         # 独立解析收集 import 源；语法按子类 grammar（与该适配器扩展名族一致）

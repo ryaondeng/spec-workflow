@@ -7,6 +7,7 @@ from .java_ts import JavaTreeSitterAdapter
 from .js_ts import JsTreeSitterAdapter, TsTreeSitterAdapter, TsxTreeSitterAdapter
 from .python_ts import PythonTreeSitterAdapter
 from .text_msgsrv import MsgSrvTextAdapter
+from .vue_sfc import VueSfcAdapter
 
 _ADAPTERS = (
     PythonTreeSitterAdapter(),
@@ -16,6 +17,7 @@ _ADAPTERS = (
     JsTreeSitterAdapter(),
     TsTreeSitterAdapter(),
     TsxTreeSitterAdapter(),
+    VueSfcAdapter(),
     BashTreeSitterAdapter(),
     MsgSrvTextAdapter(),
 )

@@ -561,6 +561,21 @@ class ExternalReviewB3(unittest.TestCase):
         notes = " ".join(n.get("note", "") for n in data["confidence"]["notes"])
         self.assertIn("cpp_decl_def_merged", notes)
 
+    def test_p1_4_merge_cpp_only_not_python(self):
+        # v1.7.0 回归：同名类在不同 Python 文件合法（pico mini 副本曾误并 23 符号）
+        tmp = self._tmp()
+        self._write(tmp, {
+            "pkg/store.py": ("class RunStore:\n"
+                             "    def start(self, x):\n"
+                             "        return x\n"),
+            "other/mini_store.py": ("class RunStore:\n"
+                                    "    def start(self, x):\n"
+                                    "        return x * 2\n"),
+        })
+        data = inv.build_inventory(tmp, project_type="generic")
+        starts = [s for s in data["symbols"] if s["qname"].endswith(".start")]
+        self.assertEqual(len(starts), 2)                    # 两处都保留
+
     def test_p1_4_refs_not_inflated_by_merge(self):
         tmp = self._tmp()
         self._write(tmp, {
@@ -571,6 +586,132 @@ class ExternalReviewB3(unittest.TestCase):
         data = inv.build_inventory(tmp, project_type="catkin")
         go = [s for s in data["symbols"] if s.get("cls") == "Fly"][0]
         self.assertEqual(go["refs"], 0)    # 声明+定义不算引用；refs 按合并前 decl 位点口径
+
+
+class ExternalReviewB4(unittest.TestCase):
+    """v1.7.0：外评 B4 批验收（B4-1 配置解析 / B4-2 monorepo 分组 /
+    B4-3 Vue 适配器 + JS 端点 / B4-4 项目类型）。"""
+
+    def _tmp(self):
+        import shutil
+        import tempfile
+        tmp = tempfile.mkdtemp(prefix="devlangs_b4_")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        return tmp
+
+    def _write(self, tmp, files):
+        import os
+        for rel, content in files.items():
+            fp = os.path.join(tmp, rel)
+            os.makedirs(os.path.dirname(fp), exist_ok=True)
+            with open(fp, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(content)
+
+    def test_b4_1_tsconfig_alias_and_entries_and_deps(self):
+        tmp = self._tmp()
+        self._write(tmp, {
+            # 宽容 JSON：带注释与尾逗号（tsconfig 常态）
+            "tsconfig.json": '{\n // 注释\n "compilerOptions": {\n'
+                             '  "paths": {"@/*": ["src/*"],},\n },\n}',
+            "package.json": '{"name": "app", "main": "lib/index.js",'
+                            ' "dependencies": {"express": "^4"}}',
+            "lib/index.js": "export const boot = 1;\n",
+            "src/utils/x.js": "export const x = 1;\n",
+            "web/app.js": 'import { x } from "@/utils/x.js";\n',
+            "requirements.txt": "flask>=3\n# comment\n-r other.txt\n",
+        })
+        data = inv.build_inventory(tmp, project_type="generic")
+        self.assertIn("express", data["external_deps"])
+        self.assertIn("flask", data["external_deps"])
+        entries = [e["path"] for e in data["entries"]]
+        self.assertIn("lib/index.js", entries)
+        mods = {m["path"]: m for m in data["modules"]}
+        self.assertIn(mods["src"]["id"], mods["web"]["deps"])   # tsconfig 别名可解析
+
+    def test_b4_2_monorepo_grouping(self):
+        tmp = self._tmp()
+        self._write(tmp, {
+            "packages/backend/package.json": '{"name": "backend"}',
+            "packages/backend/server.js": "export function s() {}\n",
+            "packages/backend/lib/util.js": "export function u() {}\n",
+            "packages/frontend/main.js": "export function f() {}\n",
+            "packages/frontend/package.json": '{"name": "frontend"}',
+        })
+        data = inv.build_inventory(tmp, project_type="generic")
+        self.assertEqual(data["module_groups"], ["backend", "frontend"])
+        by_path = {m["path"]: m for m in data["modules"]}
+        self.assertEqual(by_path["packages/backend"]["group"], "backend")
+        self.assertEqual(by_path["packages/backend/lib"]["group"], "backend")
+        self.assertEqual(by_path["packages/frontend"]["group"], "frontend")
+        # 架构表出现分组列
+        import dev_docs
+        table = dev_docs.arch_module_rows(data)
+        self.assertIn("所属分组", table)
+        self.assertIn("| backend |", table)
+
+    def test_b4_3_js_http_endpoints(self):
+        tmp = self._tmp()
+        self._write(tmp, {
+            "src/api/server.js": (
+                "app.get('/users', getUsers);\n"
+                "router.post('/items', createItem);\n"
+                "// app.get('/skipped', hidden);\n"
+            ),
+        })
+        data = inv.build_inventory(tmp, project_type="generic")
+        eps = data["endpoints"]
+        self.assertEqual(len(eps), 2)                       # 注释行不抓
+        paths = {e["path"] for e in eps}
+        self.assertEqual(paths, {"/users", "/items"})
+        methods = {e["method"][0] for e in eps}
+        self.assertEqual(methods, {"GET", "POST"})
+        self.assertTrue(all(e["file"] == "src/api/server.js" for e in eps))
+
+    def test_b4_3_vue_sfc(self):
+        tmp = self._tmp()
+        self._write(tmp, {
+            "src/views/User.vue": (
+                "<template><div/></template>\n"
+                "<script setup>\n"
+                "import { ref } from 'vue'\n"
+                "defineProps<{ title: string }>()\n"
+                "function load() {\n"
+                "  return ref(1)\n"
+                "}\n"
+                "</script>\n"
+                "<style>.x{}</style>\n"
+            ),
+        })
+        data = inv.build_inventory(tmp, project_type="generic")
+        self.assertIn("vue", data["langs"])
+        syms = data["symbols"]
+        self.assertIn("load", {s["qname"] for s in syms})
+        self.assertIn("User.prop", {s["qname"] for s in syms})
+        # 组件符号：每 SFC 一个（v1.7.0 质量检测补充）
+        comps = [s for s in syms if s["kind"] == "component"]
+        self.assertEqual(len(comps), 1)
+        self.assertEqual(comps[0]["qname"], "User")
+        vue_syms = [s for s in syms if s["file"] == "src/views/User.vue"]
+        # 行号含块偏移且精确：load 在原文第 5 行（template 1 行 + script 标签 1 行 + 块内第 3 行）
+        load = next(s for s in vue_syms if s["qname"] == "load")
+        self.assertEqual(load["line"], 5)
+        self.assertEqual([i for i in data["interfaces"]], [])   # 不受影响
+
+    def test_b4_4_project_type_detection(self):
+        tmp = self._tmp()
+        self._write(tmp, {"package.json": '{"name": "web"}', "a.js": "x\n"})
+        self.assertEqual(inv.detect_project_type(tmp, []), "node")
+        tmp2 = self._tmp()
+        self._write(tmp2, {"pom.xml": "<project/>", "A.java": "class A {}\n"})
+        self.assertEqual(inv.detect_project_type(tmp2, []), "java")
+        tmp3 = self._tmp()
+        self._write(tmp3, {"pkg/package.xml":
+                           "<package><export><build_type>ament_cmake</build_type>"
+                           "</export></package>", "pkg/n.cpp": "int m();\n"})
+        self.assertEqual(inv.detect_project_type(tmp3, []), "ros2")
+        tmp4 = self._tmp()
+        self._write(tmp4, {"pkg/package.xml": "<package><name>x</name></package>"})
+        self.assertEqual(inv.detect_project_type(tmp4, []), "catkin")
 
 
 class LineKindTs(unittest.TestCase):

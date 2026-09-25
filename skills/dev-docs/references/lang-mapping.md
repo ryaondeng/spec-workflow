@@ -12,18 +12,23 @@
 | C++ | `.cpp .cc .cxx .hpp .hh .h` | `cpp_ts` | reliable | qualified 名拆 `::` → 类归属（归一 strip）；匿名命名空间跳过；宏调用不产符号；**头/源重复符号自动合并**（v1.6.0：同 (cls,name) 只留源文件定义，头文件声明仅在无定义时保留——纯接口类不丢） |
 | C | `.c` | `c_ts` | reliable | 复用 cpp 规则（c 语法） |
 | Java | `.java` | `java_ts` | reliable | `@*Mapping` 注解端点 |
-| JavaScript | `.js .mjs .cjs` | `js_ts` | reliable | 函数/类方法/箭头函数赋值；**无 HTTP 端点识别**（Express/Koa 等路由不产 API-，语义地图/register 兜底） |
+| JavaScript | `.js .mjs .cjs` | `js_ts` | reliable | 函数/类方法/箭头函数赋值；HTTP 端点识别（v1.7.0：Express/Koa `app.get(...)` 与 NestJS `@Get` 装饰器；变量路由如实缺失） |
 | TypeScript | `.ts` | `js_ts` | reliable | 同 JS（typescript 语法；v1.5.7 起独立适配器，`langs` 正确报告 typescript） |
-| TSX | `.tsx` | `js_ts` | reliable | 同上（tsx 语法）；**`.vue` 不支持**（SFC 仅进 L0 全集，语义地图归属兜底） |
+| TSX | `.tsx` | `js_ts` | reliable | 同上（tsx 语法） |
+| Vue SFC | `.vue` | `vue_sfc` | reliable | v1.7.0：`<script setup>` 块用 TS 语法抽符号 + defineProps/defineEmits 契约；template/style 不解析（如实缺失） |
 | Shell | `.sh` | `bash_ts` | reliable | 函数 + `source` 依赖 |
 | ROS msg/srv | `.msg .srv` | `text_msgsrv` | reliable（text） | 唯一非 tree-sitter 路径：无官方 grammar；产出 `inventory.interfaces`（MSG-/SRV-）并纳入对账；字段行尾注释保留为 `comment` |
 | Go/Rust/Ruby/PHP/Kotlin… | — | 未注册 | unsupported | 文件仍进 L0 全集（防漏锚）；用语义地图归属 + `register` 登记（SYM/EPT/ITF）兜底 |
 
 > **`langs` 值含义**：`reliable` = 语法包齐、符号级抽取可用；`degraded` = 该语言语法包
 > 缺失——文件仍进全集但不产符号（`pip install -r skills/dev-docs/requirements.txt` 补齐）。
-> **仅进 L0 的扩展名**（不参与符号提取/模块划分）：`.vue .proto .launch .cmake .gradle`
+> **仅进 L0 的扩展名**（不参与符号提取/模块划分）：`.proto .launch .cmake .gradle`
 > `.scss .css .html .yaml .xml(非 package.xml)` 等——如实口径，语义地图 `ignored_files`
 > 或归属兜底。
+> **项目自述配置**（v1.7.0）：`package.json` / `tsconfig.json` / `pyproject.toml` /
+> `requirements.txt` 解析为 `inventory.entries`（入口）、`inventory.external_deps`（外部依赖）
+> 与 JS/TS 路径别名（tsconfig `paths` → 依赖映射）；monorepo 工作区标志目录 →
+> `modules[].group` + `inventory.module_groups`（模块身份不变，架构页渲染分组列）。
 
 ## 2. 入口与契约发现约定（AI 补 architecture/模块四问时用）
 

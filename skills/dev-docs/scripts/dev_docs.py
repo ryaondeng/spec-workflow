@@ -379,10 +379,11 @@ def reference_tpl_values(inv_data, m):
 
 def arch_module_rows(inv_data, out=None):
     """架构页模块清单表（机器渲染**整表**：表头 + 行）。
-    v1.5.5：职责列来源标注收敛到表头一次（此前每行都拖「AI 断言·待核」，重复噪音）；
-    表内无语义地图数据时表头退回「职责」。行：编号/名称/路径/职责(语义地图优先)/依赖。"""
+    v1.5.5：职责列来源标注收敛到表头一次；表内无语义地图数据时表头退回「职责」。
+    v1.7.0（B4-2）：monorepo 有分组时插入「所属分组」列（工作区标志目录归组）。"""
     used_smap = False
     rows = []
+    grouped = bool(inv_data.get("module_groups"))
     for m in inv_data.get("modules", []):
         resp = "（待补：职责）"
         if out:
@@ -390,14 +391,23 @@ def arch_module_rows(inv_data, out=None):
             if sm and sm.get("responsibility"):
                 resp = sm["responsibility"]
                 used_smap = True
-        rows.append("| %s | %s | %s | %s | %s |"
-                    % (m["id"], m["name"], m["path"], resp,
-                       _deps_display(m)))
+        if grouped:
+            rows.append("| %s | %s | %s | %s | %s | %s |"
+                        % (m["id"], m.get("group") or "—", m["name"], m["path"],
+                           resp, _deps_display(m)))
+        else:
+            rows.append("| %s | %s | %s | %s | %s |"
+                        % (m["id"], m["name"], m["path"], resp,
+                           _deps_display(m)))
     if not rows:
         rows = ["| — | — | — | — | — |"]
     header = "职责（语义地图·AI 断言·待核）" if used_smap else "职责"
-    table = ["| MOD-id | 模块 | 路径 | %s | 主要依赖 |" % header,
-             "|:---|:---|:---|:---|:---|"] + rows
+    if grouped:
+        table = ["| MOD-id | 所属分组 | 模块 | 路径 | %s | 主要依赖 |" % header,
+                 "|:---|:---|:---|:---|:---|:---|:---|"] + rows
+    else:
+        table = ["| MOD-id | 模块 | 路径 | %s | 主要依赖 |" % header,
+                 "|:---|:---|:---|:---|:---|"] + rows
     return "\n".join(table)
 
 

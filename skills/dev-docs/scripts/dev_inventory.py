@@ -17,6 +17,7 @@ import subprocess
 import sys
 import xml.etree.ElementTree as ET
 from collections import OrderedDict
+from pathlib import Path
 
 from dev_langs import (  # noqa: F401  （EXT_LANG 对外兼容导出）
     EXT_LANG, ambiguous_test_stem, available_extractors, get_adapter,
@@ -160,7 +161,10 @@ def detect_langs(root, extra_exclude):
 
 
 def detect_project_type(root, extra_exclude):
-    """auto 检测项目类型：目录树中发现 package.xml -> catkin，否则 generic。"""
+    """auto 检测项目类型（v1.7.0 B4-4 扩展）：
+    package.xml -> catkin（含 <build_type>/ament → ros2）；根级 pom.xml/build.gradle → java；
+    根级 package.json → node；否则 generic。"""
+    root_type = None
     for dirpath, dirnames, filenames in os.walk(root):
         keep = []
         for d in sorted(dirnames):
@@ -169,8 +173,160 @@ def detect_project_type(root, extra_exclude):
                 keep.append(d)
         dirnames[:] = keep
         if "package.xml" in filenames:
-            return "catkin"
-    return "generic"
+            try:
+                with open(os.path.join(dirpath, "package.xml"), encoding="utf-8",
+                          errors="replace") as fh:
+                    content = fh.read(64 * 1024)
+                return "ros2" if ("build_type" in content or "ament" in content) else "catkin"
+            except OSError:
+                return "catkin"
+        if root_type is None and os.path.samefile(dirpath, root):
+            if {"pom.xml", "build.gradle", "build.gradle.kts"} & set(filenames):
+                root_type = "java"
+            elif "package.json" in filenames:
+                root_type = "node"
+    return root_type or "generic"
+
+
+# 项目类型专属排除（v1.7.0 B4-4）：在 DEFAULT_EXCLUDE 之上追加
+_PROJECT_EXCLUDES = {
+    "catkin": ["build", "devel", "install", "log"],
+    "ros2": ["build", "install", "log"],
+    "java": ["target", "build", ".gradle"],
+    "node": [],
+    "generic": [],
+}
+
+
+# ---------------- 项目自述配置解析（v1.7.0，外评 B4-1/P2-6） ----------------
+# package.json/tsconfig/pyproject/requirements.txt 是项目"自述文件"：入口、依赖、
+# 路径别名全在里面。解析为三件套：JS/TS 路径别名（反哺依赖映射）、入口清单、外部依赖。
+
+def _load_json_relaxed(path):
+    """宽容 JSON（tsconfig 常带注释/尾逗号）：尽力清理后解析；失败返回 None。"""
+    try:
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+    text = re.sub(r"(^|[^:])//[^\n]*", r"\1", text)
+    text = re.sub(r",(\s*[}\]])", r"\1", text)
+    try:
+        return json.loads(text)
+    except ValueError:
+        return None
+
+
+def _walk_excluded(dirpath, dirnames, root, extra):
+    """os.walk 就地剪枝（排除目录），返回当前目录 rel。"""
+    keep = []
+    for d in sorted(dirnames):
+        rel = os.path.relpath(os.path.join(dirpath, d), root)
+        if not is_excluded(rel, extra):
+            keep.append(d)
+    dirnames[:] = keep
+    return os.path.relpath(dirpath, root).replace("\\", "/")
+
+
+def _scan_configs(root, extra):
+    """解析项目自述配置 -> {"aliases": {前缀: 基目录}, "entries": [...],
+    "external_deps": [...]}。尽力而为：单文件损坏不致命。"""
+    aliases, entries, ext_deps = {}, [], []
+    try:
+        import tomllib
+    except ImportError:
+        tomllib = None
+    for dirpath, dirnames, filenames in os.walk(root):
+        rel_dir = _walk_excluded(dirpath, dirnames, root, extra)
+        if "package.json" in filenames:
+            data = _load_json_relaxed(os.path.join(dirpath, "package.json"))
+            if isinstance(data, dict):
+                for k in ("dependencies", "devDependencies"):
+                    if isinstance(data.get(k), dict):
+                        ext_deps += list(data[k].keys())
+                main = data.get("main")
+                if isinstance(main, str) and main:
+                    entries.append({"path": os.path.normpath(
+                        os.path.join(rel_dir, main)).replace("\\", "/"),
+                        "kind": "entry", "source": "package.json:main"})
+        for name in ("tsconfig.json", "jsconfig.json"):
+            if name not in filenames:
+                continue
+            data = _load_json_relaxed(os.path.join(dirpath, name))
+            paths = ((data or {}).get("compilerOptions") or {}).get("paths") or {}
+            if isinstance(paths, dict):
+                for k, v in paths.items():
+                    if isinstance(v, list) and v and isinstance(v[0], str):
+                        # "@/*": ["src/*"] → 前缀 "@/"、基目录 "<dir>/src/"（保证尾分隔符，
+                        # 否则拼接变成 "src" + "utils/x.js"）
+                        base = os.path.normpath(os.path.join(
+                            rel_dir, v[0].split("*", 1)[0])).replace("\\", "/")
+                        if not base.endswith("/"):
+                            base += "/"
+                        aliases[k.split("*", 1)[0] or k] = base
+        if tomllib is not None and "pyproject.toml" in filenames:
+            try:
+                with open(os.path.join(dirpath, "pyproject.toml"), "rb") as fh:
+                    data = tomllib.load(fh)
+            except (OSError, ValueError):
+                data = None
+            proj = (data or {}).get("project") or {}
+            deps = proj.get("dependencies")
+            if isinstance(deps, list):
+                ext_deps += [d for d in deps if isinstance(d, str)]
+            for name in (proj.get("scripts") or {}):
+                entries.append({"path": rel_dir, "kind": "entry",
+                                "source": "pyproject:[project.scripts]:%s" % name})
+        if "requirements.txt" in filenames:
+            try:
+                with open(os.path.join(dirpath, "requirements.txt"),
+                          encoding="utf-8", errors="replace") as fh:
+                    for raw in fh:
+                        line = raw.split("#", 1)[0].strip()
+                        if line and not line.startswith(("-", ".")):
+                            ext_deps.append(re.split(r"[<>=~!\[; ]", line)[0])
+            except OSError:
+                pass
+    return {"aliases": aliases, "entries": entries,
+            "external_deps": sorted(set(ext_deps))}
+
+
+# 工作区标志文件（v1.7.0 B4-2/P2-9：monorepo 顶层分组探测）
+_WORKSPACE_MARKERS = {"package.json", "pyproject.toml", "setup.py", "pom.xml"}
+
+
+def _detect_workspaces(root, extra):
+    """子目录工作区标志（目录含清单文件）→ 排序路径列表（不含项目根）。"""
+    out = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        rel = _walk_excluded(dirpath, dirnames, root, extra)
+        if rel in (".", ""):
+            continue
+        if _WORKSPACE_MARKERS & set(filenames):
+            out.append(rel)
+    return sorted(out)
+
+
+def _assign_module_groups(modules, ws_dirs):
+    """把工作区目录下的模块归组（模块身份/ID 不变，只加 group 字段）。
+    返回分组名列表。取最深匹配工作区前缀；examples/mini-pico 标志 → 其子模块归 mini-pico 组。"""
+    groups = []
+    if not ws_dirs:
+        return groups
+    seen = set()
+    for m in modules:
+        if m.get("path") in (".", ""):
+            continue
+        cand = [w for w in ws_dirs
+                if m["path"] == w or m["path"].startswith(w + "/")]
+        if not cand:
+            continue
+        g = os.path.basename(max(cand, key=len))
+        m["group"] = g
+        if g not in seen:
+            seen.add(g)
+            groups.append(g)
+    return sorted(groups)
 
 
 def iter_all_files(root, extra_exclude):
@@ -499,17 +655,20 @@ def collect_tests(root, extra_exclude):
 # ---------------- 主构建 ----------------
 
 def build_inventory(root, extra_exclude=None, project_type="auto"):
-    """构建 inventory 结构（不落盘）。project_type: auto|catkin|generic。"""
+    """构建 inventory 结构（不落盘）。project_type: auto|catkin|ros2|java|node|generic。"""
     extra = extra_exclude or []
     root = os.path.abspath(root)
     ptype = project_type
     if ptype == "auto":
         ptype = detect_project_type(root, extra)
-    if ptype == "catkin":
-        # catkin 构建产物目录并入排除（对所有扫描生效：代码/全文件/模块/依赖）
-        extra = list(extra) + [p for p in CATKIN_EXCLUDE if p not in extra]
+    # 项目类型专属排除（v1.7.0 B4-4）：catkin/ros2 构建产物、java target 等
+    extra = list(extra) + [p for p in _PROJECT_EXCLUDES.get(ptype, [])
+                           if p not in extra]
     modules = build_modules(root, extra, ptype)
     langs = detect_langs(root, extra)
+    # v1.7.0（B4-1/B4-2）：项目自述配置解析 + monorepo 顶层分组（模块身份不变）
+    cfg = _scan_configs(root, extra)
+    module_groups = _assign_module_groups(modules, _detect_workspaces(root, extra))
 
     symbols = []
     endpoints = []
@@ -583,8 +742,8 @@ def build_inventory(root, extra_exclude=None, project_type="auto"):
     # 模块依赖（python import 启发）
     _mod_deps(modules, root, extra)
 
-    # include/导入依赖映射：C++ 本地头（"pkg/path.h"）与 JS/TS 相对导入（./x、@/x）
-    # → 项目内文件 → 目标模块（v1.5.8 P1-1：此前 JS/TS 的 ./ ../ @/ 完全未解析）
+    # include/导入依赖映射：C++ 本地头（"pkg/path.h"）与 JS/TS 导入（./ ../ @/ 及
+    # tsconfig paths 别名——v1.7.0 B4-1）→ 项目内文件 → 目标模块
     if include_records:
         include_deps = {}
         for rel, incs in include_records:
@@ -595,14 +754,10 @@ def build_inventory(root, extra_exclude=None, project_type="auto"):
                 inc = inc.strip("<>\"'").strip()
                 if not inc:
                     continue
-                if inc.startswith(("./", "../", "@/")):
-                    # JS/TS：相对导入按导入文件所在目录解析；@/ 约定为 src/ 根别名
-                    if inc.startswith("@/"):
-                        base = os.path.normpath("src/" + inc[2:])
-                    else:
-                        base = os.path.normpath(
-                            os.path.join(os.path.dirname(rel), inc))
-                    target = _resolve_js_target(base, file_mod)
+                if inc.startswith(("./", "../")) or inc.startswith("@/") \
+                        or any(inc.startswith(p) for p in cfg["aliases"]):
+                    # JS/TS：相对导入按导入文件目录；别名按 tsconfig paths / src 根约定
+                    target = _resolve_js_import(inc, rel, cfg["aliases"], file_mod)
                     if target and file_mod[target] != src_mod:
                         include_deps.setdefault(src_mod, set()).add(file_mod[target])
                     continue
@@ -669,6 +824,9 @@ def build_inventory(root, extra_exclude=None, project_type="auto"):
         "build_issues": build_issues,
         "zero_refs": zero_refs,
         "scan_errors": scan_errors,
+        "entries": cfg["entries"],
+        "external_deps": cfg["external_deps"],
+        "module_groups": module_groups,
         "confidence": {"notes": confidence_notes},
     }
     return inventory
@@ -728,6 +886,20 @@ def _map_import_dep(deps, imp, by_path, by_name=None):
 _JS_RESOLVE_EXTS = (".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx")
 
 
+def _resolve_js_import(inc, rel, aliases, file_mod):
+    """JS/TS 导入说明符 → 项目内文件：tsconfig paths 别名 / 相对路径 / src 根约定。"""
+    for prefix, base in aliases.items():
+        if inc.startswith(prefix):
+            return _resolve_js_target(
+                os.path.normpath(base + inc[len(prefix):]), file_mod)
+    if inc.startswith(("./", "../")):
+        return _resolve_js_target(os.path.normpath(
+            os.path.join(os.path.dirname(rel), inc)), file_mod)
+    if inc.startswith("@/"):
+        return _resolve_js_target(os.path.normpath("src/" + inc[2:]), file_mod)
+    return None
+
+
 def _resolve_js_target(base, file_mod):
     """JS/TS 导入说明符 -> 项目内文件（精确 / +扩展名 / /index+扩展名；无则 None）。"""
     cands = [base]
@@ -740,30 +912,36 @@ def _resolve_js_target(base, file_mod):
 
 
 _CPP_HEADER_EXTS = (".h", ".hpp", ".hh")
+_CPP_SOURCE_EXTS = (".c", ".cpp", ".cc", ".cxx")
+_CPP_FAMILY_EXTS = _CPP_HEADER_EXTS + _CPP_SOURCE_EXTS
 
 
 def _merge_cpp_decl_defs(symbols):
     """C++ 同名类方法"头文件声明 + 源文件定义"合并（就地过滤，返回被丢弃符号列表）。
 
-    规则（确定性）：按 (cls, name) 分组——优先保留非头文件定义；同为定义或同为声明
-    时保留先出现者。函数（无 cls）与类符号不受影响。"""
-    best = {}      # (cls, qname) -> 保留的下标
+    规则（确定性）：按 qname 分组，**仅限 C/C++ 文件族**——同名类在不同文件合法
+    （Python/JS 不合并；pico 的 examples/mini-pico 副本曾误并 23 符号）。
+    组内同时存在头文件声明与非头文件定义 → 丢弃头文件声明；全是声明（多接口头）
+    → 保守不动。函数（无 cls）与类符号不受影响。"""
     drop = set()
+    groups = {}
     for i, s in enumerate(symbols):
         if s.get("kind") != "method" or not s.get("cls"):
             continue
-        key = (s["cls"], s["qname"])
-        cur = best.get(key)
-        if cur is None:
-            best[key] = i
+        ext = os.path.splitext(s["file"].lower())[1]
+        if ext not in _CPP_FAMILY_EXTS:
             continue
-        cur_hdr = symbols[cur]["file"].lower().endswith(_CPP_HEADER_EXTS)
-        new_hdr = s["file"].lower().endswith(_CPP_HEADER_EXTS)
-        if cur_hdr and not new_hdr:      # 先到的是声明、后来的是定义 → 换成定义
-            drop.add(cur)
-            best[key] = i
-        else:                            # 已是定义 / 同类重复 → 丢弃后来者
-            drop.add(i)
+        groups.setdefault(s["qname"], []).append(i)
+    for _qname, idxs in groups.items():
+        if len(idxs) < 2:
+            continue
+        has_def = any(not symbols[i]["file"].lower().endswith(_CPP_HEADER_EXTS)
+                      for i in idxs)
+        if not has_def:
+            continue                        # 全是声明：保守不动
+        for i in idxs:
+            if symbols[i]["file"].lower().endswith(_CPP_HEADER_EXTS):
+                drop.add(i)
     if not drop:
         return []
     out = [s for i, s in enumerate(symbols) if i not in drop]
