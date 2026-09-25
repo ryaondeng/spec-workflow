@@ -480,6 +480,12 @@ class TestRefCounts(TmpCase):
         with open(fp, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(card.replace("把某个东西翻倍", dev_docs.MARK))
         self.assertEqual(dev_docs.zero_ref_asserts(data, out), [])
+        # v1.6.0：合规形态（如实声明零引用待证）不构成断言
+        with open(fp, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(card.replace(
+                "把某个东西翻倍",
+                "（据 src/app.py:8）源码零引用（refs=0）——疑似未启用；用途待证。"))
+        self.assertEqual(dev_docs.zero_ref_asserts(data, out), [])
 
 
 class TestSmapGate(TmpCase):
@@ -529,6 +535,21 @@ class TestSmapGate(TmpCase):
         root, out, data = self._init({
             "modules": [{"path": "src", "responsibility": "无数据库，状态全在内存"}]})
         self.assertEqual(dev_docs.smap_suspect_terms(data, out), [])
+
+
+    def test_gate_hard_errors(self):
+        # v1.6.0 P2-8 A 档：hard 门禁追加拦截项（default 档不受影响）
+        rep = {"has_semantic_map": False, "file_uncovered": ["a.py"],
+               "zero_ref_asserts": ["x（@FUN-001 f）"], "smap_ref_errors": [],
+               "smap_suspect_terms": ["modules.responsibility：出现「数据库」…"]}
+        errs = dev_docs._hard_gate_errors(rep, {})
+        self.assertEqual(len(errs), 4)
+        self.assertTrue(any("semantic_map_missing" in e for e in errs))
+        self.assertTrue(any("file_uncovered(a.py)" in e for e in errs))
+        # 无语义地图以外全部干净 → 仅 1 项
+        rep2 = {"has_semantic_map": True, "file_uncovered": [],
+                "zero_ref_asserts": [], "smap_ref_errors": [], "smap_suspect_terms": []}
+        self.assertEqual(dev_docs._hard_gate_errors(rep2, {}), [])
 
 
 class TestAudit(TmpCase):

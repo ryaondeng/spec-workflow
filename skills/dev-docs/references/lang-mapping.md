@@ -9,7 +9,7 @@
 | 语言 | 扩展名 | 适配器 | 能力 | 备注 |
 |:---|:---|:---|:---|:---|
 | Python | `.py` | `python_ts` | reliable | 顶层函数 + 类方法；`_` 私有不入表；装饰器路由端点（FastAPI/Flask） |
-| C++ | `.cpp .cc .cxx .hpp .hh .h` | `cpp_ts` | reliable | qualified 名拆 `::` → 类归属（归一 strip）；匿名命名空间跳过；宏调用不产符号 |
+| C++ | `.cpp .cc .cxx .hpp .hh .h` | `cpp_ts` | reliable | qualified 名拆 `::` → 类归属（归一 strip）；匿名命名空间跳过；宏调用不产符号；**头/源重复符号自动合并**（v1.6.0：同 (cls,name) 只留源文件定义，头文件声明仅在无定义时保留——纯接口类不丢） |
 | C | `.c` | `c_ts` | reliable | 复用 cpp 规则（c 语法） |
 | Java | `.java` | `java_ts` | reliable | `@*Mapping` 注解端点 |
 | JavaScript | `.js .mjs .cjs` | `js_ts` | reliable | 函数/类方法/箭头函数赋值；**无 HTTP 端点识别**（Express/Koa 等路由不产 API-，语义地图/register 兜底） |

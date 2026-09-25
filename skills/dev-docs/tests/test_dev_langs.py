@@ -520,6 +520,59 @@ class ExternalReviewB2(unittest.TestCase):
         self.assertEqual(fields[0].get("comment"), "目标编号")   # 此前注释被丢弃
 
 
+class ExternalReviewB3(unittest.TestCase):
+    """v1.6.0：外评修复 B3 批验收（P1-4 头/源合并）。"""
+
+    def _tmp(self):
+        import shutil
+        import tempfile
+        tmp = tempfile.mkdtemp(prefix="devlangs_b3_")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        return tmp
+
+    def _write(self, tmp, files):
+        import os
+        for rel, content in files.items():
+            fp = os.path.join(tmp, rel)
+            os.makedirs(os.path.dirname(fp), exist_ok=True)
+            with open(fp, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(content)
+
+    def test_p1_4_cpp_decl_def_merge(self):
+        tmp = self._tmp()
+        self._write(tmp, {
+            "src/p/package.xml": "<package><name>p</name></package>",
+            # 头文件声明 + 源文件定义：同名同类 → 只留定义
+            "src/p/inc/fly.h": "class Fly {\npublic:\n    int go(int x);\n};\n",
+            "src/p/src/fly.cpp": "int Fly::go(int x) { return x; }\n",
+            # 纯接口（头文件声明无定义）→ 保留
+            "src/p/inc/api.h": "class Api {\npublic:\n    virtual void onlyDecl();\n};\n",
+        })
+        data = inv.build_inventory(tmp, project_type="catkin")
+        go = [s for s in data["symbols"] if s.get("cls") == "Fly"]
+        self.assertEqual(len(go), 1)                          # 不再两张卡
+        self.assertTrue(go[0]["file"].endswith("fly.cpp"))    # 保留定义
+        self.assertIn("Fly::go", go[0]["qname"])
+        decl = [s for s in data["symbols"] if s.get("cls") == "Api"]
+        self.assertEqual(len(decl), 1)                        # 纯接口声明保留
+        # ID 稳定不变式：合并是"丢弃"不是"重编号"，幸存者 ID 与合并前一致
+        self.assertEqual(len({s["id"] for s in data["symbols"]}),
+                         len(data["symbols"]))
+        notes = " ".join(n.get("note", "") for n in data["confidence"]["notes"])
+        self.assertIn("cpp_decl_def_merged", notes)
+
+    def test_p1_4_refs_not_inflated_by_merge(self):
+        tmp = self._tmp()
+        self._write(tmp, {
+            "src/p/package.xml": "<package><name>p</name></package>",
+            "src/p/inc/fly.h": "class Fly {\npublic:\n    int go(int x);\n};\n",
+            "src/p/src/fly.cpp": "int Fly::go(int x) { return x; }\n",
+        })
+        data = inv.build_inventory(tmp, project_type="catkin")
+        go = [s for s in data["symbols"] if s.get("cls") == "Fly"][0]
+        self.assertEqual(go["refs"], 0)    # 声明+定义不算引用；refs 按合并前 decl 位点口径
+
+
 class LineKindTs(unittest.TestCase):
     """v1.5.2：语法层行性质判定——治"引用落在注释/字符串里"的假事实。"""
 

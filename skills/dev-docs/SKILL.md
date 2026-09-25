@@ -1,6 +1,6 @@
 ---
 name: dev-docs
-version: 1.5.8
+version: 1.6.0
 description: >
   从已有代码库反建技术文档（dev-docs）：面向没有接口/设计/架构文档的存量项目，
   用「规则提取（文件全集/机器盘点/对账漂移）+ LLM 提取（AI 通读建语义地图再按模板填文档）」双轨机制，
@@ -157,11 +157,13 @@ dev_docs.py promote  --dir <目标项目> --file <draft文件>
 dev_docs.py register --dir <目标项目> --kind symbol|endpoint|interface --name <限定名> \
                      --src <相对项目根文件> [--line N] [--signature S] [--note N]
                      # 人工/低置信登记（语言指纹未覆盖时用）；必须真实 file:line，登记后不算 phantom
-dev_docs.py check    --dir <目标项目> [--drift] [--strict]
+dev_docs.py check    --dir <目标项目> [--drift] [--strict] [--gate default|hard]
                      # 对账：orphan/phantom/stale/登记腐化/缺页/缺节/引用不存在/行号异常 + 文件覆盖 + 语义填充度；
-                     # 另打印 zero_ref / zero_ref_assert（源码零引用却已断言用途）与
-                     # smap_ref_error / smap_suspect_term（语义地图编造引用/重词无痕迹——AI 断言产物同样受检）；
-                     # --strict 把 warn（AI-FILL 残留、文件未归属、行号异常）升为 ERROR；exit 0=干净
+                     # 另打印 zero_ref / zero_ref_assert（源码零引用却已断言用途；如实写「refs=0/未被使用/待证」不算）
+                     # 与 smap_ref_error / smap_suspect_term（语义地图编造引用/重词无痕迹——AI 断言产物同样受检）；
+                     # --strict 把 warn（AI-FILL 残留、文件未归属、行号异常、scan_error）升为 ERROR；
+                     # --gate hard = --strict 全部口径 + 语义地图缺失/文件未归属/零引用断言/地图臆造
+                     # 全部升 ERROR（**对外交付必须 hard 全绿**）；exit 0=干净
 dev_docs.py fixrefs  --dir <目标项目> [--write]
                      # 修正页内 file:line 引用：指向空行/越界=明确错误可自动修；
                      # 指向注释/import 行=疑似偏移只提示（避免误改正当引用）
@@ -244,7 +246,7 @@ inventory → plan --write → extract --layer all → （逐页填叙事 + 逐�
 机器门禁只覆盖**结构、覆盖、行号位置、卡片填尽**；**语义正确性**（事实是否与源码一致、
 有无编造 / 张冠李戴 / 把死代码当现行约定）机器无法判定，必须另过一次**独立评估**：
 
-1. 机器链路全绿：`inventory → plan --write → extract --layer all → 填写 → promote 全部 → report → check --strict`
+1. 机器链路全绿：`inventory → plan --write → extract --layer all → 填写 → promote 全部 → report → check --gate hard`
 2. **独立评估**（另一 agent / 人，按 `references/quality-review.md` 清单执行）：先跑 `audit`
    生成工作底稿（机器已核行性质 / 签名一致性 / 零引用断言 / 地图引用与重词），
    评估者按底稿核对**语义**：抽 **≥25 处** file:line、**≥15 张**卡片，输出 P0/P1/P2 与抽样统计表

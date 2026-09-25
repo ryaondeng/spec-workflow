@@ -1581,8 +1581,10 @@ def ai_fill_hits(out):
 
 
 def zero_ref_asserts(inv_data, out):
-    """refs=0 且卡片语义**已填**（非 TODO）→ 叙事在断言其用途（P0-4 的残余形态）。
-    提示级（不计失败）：可能是框架回调，但叙事必须降级为「零引用，用途待证」或删除。"""
+    """refs=0 且卡片语义**已填**且**非合规形态** → 叙事在臆造其用途（P0-4 残余形态）。
+
+    合规形态（v1.6.0）：语义行如实声明「refs=0 / 未被使用 / 零引用…待证」——
+    这是纪律要求的写法，不算断言用途；只有"写着功能性描述却零引用"才计。"""
     zero_names = {z.get("name") for z in (inv_data.get("zero_refs") or [])}
     if not zero_names:
         return []
@@ -1592,6 +1594,11 @@ def zero_ref_asserts(inv_data, out):
             name_of_id[s["id"]] = s.get("qname")
     if not name_of_id:
         return []
+
+    def _compliant(ln):
+        low = ln.lower()
+        return "refs=0" in low or "未被使用" in ln or ("待证" in ln and "零引用" in ln)
+
     hits = []
     for fp in list_md(out):
         rel = os.path.relpath(fp, out).replace("\\", "/")
@@ -1602,7 +1609,7 @@ def zero_ref_asserts(inv_data, out):
                 cur = m.group(1)
                 continue
             if cur and ln.startswith(_SEM_LINE_PREFIX):
-                if MARK not in ln and cur in name_of_id:
+                if MARK not in ln and cur in name_of_id and not _compliant(ln):
                     hits.append("%s（@%s %s）" % (rel, cur, name_of_id[cur]))
                 cur = None
     return hits
@@ -1670,9 +1677,28 @@ def analyze(inv_data, out, drift=False):
     }
 
 
-def cmd_check(inv_data, out, drift, root=None, strict=False):
+def _hard_gate_errors(rep, inv_data):
+    """--gate hard 追加拦截项（v1.6.0，外评 P2-8 A 档）：语义地图缺失/文件未归属/
+    零引用断言/地图引用失效/地图重词臆造。default 档维持提示，不影响存量项目。"""
+    errs = []
+    if not rep["has_semantic_map"]:
+        errs.append("semantic_map_missing(语义地图缺失——LLM 交付前必须建图)")
+    for p in rep.get("file_uncovered") or []:
+        errs.append("file_uncovered(%s)" % p)
+    for it in rep.get("zero_ref_asserts") or []:
+        errs.append("zero_ref_assert(%s)" % it)
+    for it in rep.get("smap_ref_errors") or []:
+        errs.append("smap_ref_error(%s)" % it)
+    for it in rep.get("smap_suspect_terms") or []:
+        errs.append("smap_suspect_term(%s)" % it)
+    return errs
+
+
+def cmd_check(inv_data, out, drift, root=None, strict=False, gate="default"):
     if inv_data is None:
         raise SystemExit("缺少 inventory.json，先运行 inventory 或带 --drift 重扫")
+    if gate == "hard":                   # hard 档 = strict 全部口径 + 语义地图门禁（v1.6.0）
+        strict = True
     rep = analyze(inv_data, out, drift=drift)
     errors = (rep["orphan_syms"] + rep["orphan_eps"] + rep["phantom"] + rep["stale"]
               + rep["reg_file_errors"] + rep["plan_missing_pages"]
@@ -1761,6 +1787,14 @@ def cmd_check(inv_data, out, drift, root=None, strict=False):
     if strict and scan_errors:
         errors = errors + ["scan_error(%s: %s)" % (n.get("file"), n.get("note"))
                            for n in scan_errors]
+    hard_errs = _hard_gate_errors(rep, inv_data) if gate == "hard" else []
+    if hard_errs:
+        errors = errors + hard_errs
+        print("[gate_hard(交付硬门禁追加拦截——语义地图/覆盖/断言/地图臆造)] %d 项:" % len(hard_errs))
+        for it in hard_errs[:10]:
+            print("    - %s" % it)
+        if len(hard_errs) > 10:
+            print("    ... 共 %d" % len(hard_errs))
     for label, items, fix in groups:
         if items:
             print("[%s] %d 项（%s）:" % (label, len(items), fix))
@@ -2379,6 +2413,9 @@ def main(argv=None):
     ap.add_argument("--force", action="store_true", help="plan：忽略已有 plan（放弃人工编辑保护）")
     ap.add_argument("--json", action="store_true", help="brief：输出 JSON（供 Agent 消费）")
     ap.add_argument("--strict", action="store_true", help="check：把 warn（AI-FILL 残留/文件未归属）升级为 ERROR")
+    ap.add_argument("--gate", choices=["default", "hard"], default="default",
+                    help="check 门禁档位：default=提示级；hard=--strict 全部口径 + 语义地图缺失/"
+                         "文件未归属/零引用断言/地图臆造全部升 ERROR（对外交付用）")
     ap.add_argument("--exclude", action="append", default=[], help="额外排除模式（可多次）")
     ap.add_argument("--include", action="append", default=[],
                     help="排除白名单（可多次）：解除同名默认排除项，如 --include migrations")
@@ -2433,7 +2470,7 @@ def main(argv=None):
                                  project_type=a.project_type)
         else:
             data = load_inventory(out)
-        return cmd_check(data, out, a.drift, root, strict=a.strict)
+        return cmd_check(data, out, a.drift, root, strict=a.strict, gate=a.gate)
     elif a.command == "report":
         data = load_inventory(out)
         cmd_report(data, root, out)

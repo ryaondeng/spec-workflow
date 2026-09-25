@@ -626,6 +626,16 @@ def build_inventory(root, extra_exclude=None, project_type="auto"):
     for s in symbols:
         s["refs"] = refs_map.get(_leaf_name(s.get("qname")), 0)
 
+    # v1.6.0（外评 P1-4）：C++ 头/源重复符号合并——同一 (cls, name) 的头文件声明与
+    # 源文件定义只保留定义（签名更完整），头文件声明仅当无对应定义时保留（纯接口类）。
+    # **在 ID 分配之后合并**：幸存符号 ID 不变（迁移=只删被合并卡的锚点，语义零重填）；
+    # refs 在合并前计算（decl 位点按全量符号口径，合并不虚增引用数）。
+    dropped = _merge_cpp_decl_defs(symbols)
+    if dropped:
+        confidence_notes.append({"file": "",
+                                 "note": "cpp_decl_def_merged %d（头文件声明并入源文件定义，"
+                                         "P1-4；被并入的声明符号 ID 见 merge 前基线）" % len(dropped)})
+
     # L0 全文件清单（含未登记语言，如 .cpp/.msg/.srv）+ 非 git 漂移基线
     files, files_hashes, file_notes = iter_all_files(root, extra)
     confidence_notes.extend(file_notes)
@@ -727,3 +737,36 @@ def _resolve_js_target(base, file_mod):
         if c in file_mod:
             return c
     return None
+
+
+_CPP_HEADER_EXTS = (".h", ".hpp", ".hh")
+
+
+def _merge_cpp_decl_defs(symbols):
+    """C++ 同名类方法"头文件声明 + 源文件定义"合并（就地过滤，返回被丢弃符号列表）。
+
+    规则（确定性）：按 (cls, name) 分组——优先保留非头文件定义；同为定义或同为声明
+    时保留先出现者。函数（无 cls）与类符号不受影响。"""
+    best = {}      # (cls, qname) -> 保留的下标
+    drop = set()
+    for i, s in enumerate(symbols):
+        if s.get("kind") != "method" or not s.get("cls"):
+            continue
+        key = (s["cls"], s["qname"])
+        cur = best.get(key)
+        if cur is None:
+            best[key] = i
+            continue
+        cur_hdr = symbols[cur]["file"].lower().endswith(_CPP_HEADER_EXTS)
+        new_hdr = s["file"].lower().endswith(_CPP_HEADER_EXTS)
+        if cur_hdr and not new_hdr:      # 先到的是声明、后来的是定义 → 换成定义
+            drop.add(cur)
+            best[key] = i
+        else:                            # 已是定义 / 同类重复 → 丢弃后来者
+            drop.add(i)
+    if not drop:
+        return []
+    out = [s for i, s in enumerate(symbols) if i not in drop]
+    dropped = [s for i, s in enumerate(symbols) if i in drop]
+    symbols[:] = out
+    return dropped
